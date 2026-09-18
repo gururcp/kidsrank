@@ -72,6 +72,15 @@
 const KEY = 'kidsrank.v1';
 const DEFAULT_PAYOUT = { first: 5, second: 3, third: 2, participation: 1 };
 
+/* --- the shared family board (see SHARED BOARD, at the foot of this file) ---
+   Paste the Firebase web config object in below and both boards start sharing
+   one set of players, games and stars. Leave it null and this stays exactly
+   what it has always been: a private board inside this one browser. */
+const FIREBASE_CONFIG = null;
+const FAMILY_ID   = 'home';            // one board per family; this is its name
+const SCHEMA      = 1;                 // bumped if the shared format ever changes
+const ADOPTED_KEY = 'kidsrank.joined';
+
 const EMOJIS = ['🦊','🐧','🦁','🐯','🐨','🐼','🐵','🦄','🐙','🐢','🦉','🐝','🦖','🐬','🦋','🐰',
                 '🐶','🐱','🐹','🐷','🦈','🦜','🐳','🦕','🦥','🦩','🐞','🐊','⚽','🚀','🌟','🍭',
                 '🎈','🎸','🧢','🍕'];
@@ -134,7 +143,12 @@ function loadDB() {
 }
 let db = loadDB();
 
-function save() {
+/* The family board, once there is one. Declared here and filled in at the foot
+   of the file, so save() can reach it while everything stays in load order. */
+var sync = null;
+const shared = () => !!(sync && sync.on);
+
+function writeLocal() {
   try {
     localStorage.setItem(KEY, JSON.stringify(db));
     return true;
@@ -143,6 +157,15 @@ function save() {
     console.warn('KidsRank: save failed', e);
     return false;
   }
+}
+
+/* localStorage is written every single time, signed in or not — it is this app's
+   own store and its safety net. The family board is an extra place the same data
+   goes, never a replacement, so nothing here can fail because the network did. */
+function save() {
+  const ok = writeLocal();
+  if (shared()) sync.flush();
+  return ok;
 }
 
 /* ------------------------------------------------------------ kid lookups */
@@ -306,8 +329,15 @@ function computeResults(g) {
 }
 
 /* ---------------------------------------------------------- data queries */
-const liveGame  = () => db.games.find(g => g.status === 'live') || null;
+/* Both boards must agree on WHICH game is live, otherwise each one scores into a
+   different game and the evening quietly splits in two. createdAt cannot decide
+   it alone — it is Date.now(), and two devices' clocks disagree — so the id
+   breaks the tie. An aborted game has status 'aborted' and is in neither list. */
+const liveGames = () => db.games.filter(g => g.status === 'live')
+  .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+const liveGame  = () => liveGames()[0] || null;
 const doneGames = () => db.games.filter(g => g.status === 'done');
+const payoutOf  = g => g.payout || DEFAULT_PAYOUT;
 
 function rangeStart(filter) {
   const d = new Date(); d.setHours(0, 0, 0, 0);
@@ -401,9 +431,33 @@ function shellTop() {
       '<span class="text-2xl sm:text-3xl">🏅</span>' +
       '<span class="text-lg font-extrabold leading-tight tracking-tight sm:text-2xl">' + esc(db.settings.boardTitle || 'Family Game Board') + '</span>' +
     '</button>' +
-    '<div class="flex items-center gap-1 rounded-3xl bg-white/10 p-1 backdrop-blur">' + nav +
+    '<div class="flex items-center gap-1 rounded-3xl bg-white/10 p-1 backdrop-blur">' + syncChip() + nav +
       '<button data-act="settings-open" title="Settings" class="rounded-2xl px-2.5 py-2 text-lg text-white/70 hover:bg-white/10 hover:text-white">⚙️</button>' +
-    '</div></div>' + banner;
+    '</div></div>' + joinBanner() + banner;
+}
+
+/* Whether this board is on its own or joined to the family one. Silent when the
+   app has no family board configured at all, so a plain copy looks untouched. */
+function syncChip() {
+  if (!FIREBASE_CONFIG) return '';
+  const m = { connecting: ['⏳', 'Connecting…',       'text-white/60'],
+              synced:     ['🔗', 'Shared board',      'text-emerald-300'],
+              error:      ['⚠️', 'Not sharing',       'text-amber-300'],
+              off:        ['📵', 'This device only',  'text-white/50'] }[sync ? sync.status : 'off'];
+  if (!m) return '';
+  const act = m[1] === 'Shared board' || m[1] === 'Connecting…' ? 'settings-open' : 'sync-in';
+  return '<button data-act="' + act + '" title="' + m[1] + '" class="flex items-center gap-1.5 rounded-2xl px-2.5 py-2 text-xs font-extrabold ' +
+    m[2] + ' hover:bg-white/10"><span class="text-base">' + m[0] + '</span><span class="hidden lg:inline">' + m[1] + '</span></button>';
+}
+function joinBanner() {
+  if (!FIREBASE_CONFIG || shared() || ui.joinHide) return '';
+  if (sync && sync.status === 'connecting') return '';
+  return '<div class="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border-2 border-emerald-300/50 bg-emerald-400/10 px-4 py-3">' +
+    '<span class="text-2xl">🔗</span>' +
+    '<span class="min-w-[13rem] flex-1"><span class="block font-extrabold text-emerald-200">Join the family board</span>' +
+    '<span class="block text-sm text-emerald-100/70">Sign in once on each device and everyone sees the same players and the same stars.</span></span>' +
+    btn('sync-in', '🔗 Sign in', { tone: 'primary', cls: 'py-2 text-sm' }) +
+    btn('join-hide', 'Not now', { cls: 'py-2 text-sm' }) + '</div>';
 }
 
 function card(inner, cls) {
@@ -638,9 +692,9 @@ function liveHeader(g, right) {
     '<span class="block truncate text-sm text-white/50">' + fmtDay(g.date) +
       /* the star breakdown is reference only — it also sits on the setup and
          results screens — so it steps aside on a phone to keep this to one line */
-      '<span class="hidden sm:inline"> · 🥇 ' + g.payout.first + ' · 🥈 ' + g.payout.second +
-        ' · 🥉 ' + g.payout.third +
-        (g.payout.participation ? ' · 🙌 ' + g.payout.participation : '') + ' stars</span>' +
+      '<span class="hidden sm:inline"> · 🥇 ' + payoutOf(g).first + ' · 🥈 ' + payoutOf(g).second +
+        ' · 🥉 ' + payoutOf(g).third +
+        (payoutOf(g).participation ? ' · 🙌 ' + payoutOf(g).participation : '') + ' stars</span>' +
       (perQuestion(g) ? ' · ⚡ ' + g.countdownSec + 's a question'
         : g.type === 'quiz' && hasClock(g) ? ' · ⏳ ' + Math.round(g.countdownSec / 60) + 'm round' : '') +
       '</span></span></span>' +
@@ -655,8 +709,12 @@ function viewLive() {
 /* ============================================================ LIVE — QUIZ */
 function viewQuiz(g) {
   const rows = g.results || [];
-  const best = Math.max(0, ...rows.map(r => r.correct || 0));
-  const total = rows.reduce((a, r) => a + (r.correct || 0), 0);
+  /* An atomic increment has no floor, so two people both tapping − on a kid who
+     is on zero can briefly land on −1. Clamped on the way out here; computeResults
+     and saveResults clamp again, so a negative never reaches the board. */
+  const scoreOf = r => Math.max(0, r.correct || 0);
+  const best = Math.max(0, ...rows.map(scoreOf));
+  const total = rows.reduce((a, r) => a + scoreOf(r), 0);
   const timed = hasClock(g), perQ = perQuestion(g);
   const over = timed && raceOver(g);
   const frozen = over && !perQ;          // the round's clock ran out — no more points
@@ -675,7 +733,7 @@ function viewQuiz(g) {
               : btn('race-start', (g.raceAccum ? '▶ Resume' : '▶ Start the clock'), { tone: 'hero', cls: 'text-lg' }))));
 
   const cards = rows.map(r => {
-    const k = kidOf(r.kidId), n = r.correct || 0, lead = n > 0 && n === best;
+    const k = kidOf(r.kidId), n = scoreOf(r), lead = n > 0 && n === best;
     return '<div data-act="plus" data-id="' + r.kidId + '" role="button" tabindex="0" ' +
       'class="noselect relative flex cursor-pointer flex-col justify-center rounded-3xl border-4 p-4 text-center shadow-xl transition active:scale-[0.97] ' +
       (timed ? 'lg:min-h-[30vh] ' : 'lg:min-h-[52vh] ') + (frozen ? 'opacity-60 ' : '') +
@@ -714,6 +772,14 @@ function viewQuiz(g) {
    round / per-question timer. Times are wall-clock so a backgrounded tab, a
    pause, or a refresh mid-game never drifts. */
 const raceElapsed = g => ((g.raceAccum || 0) + (g.raceStart ? Date.now() - g.raceStart : 0)) / 1000;
+/* Pausing folds the running span into raceAccum. Since the clock no longer
+   stops itself at zero, that span can overrun the countdown, so it is capped. */
+function foldedAccum(g) {
+  let acc = (g.raceAccum || 0) + (g.raceStart ? Date.now() - g.raceStart : 0);
+  if (g.countdownSec) acc = Math.min(acc, g.countdownSec * 1000);
+  return acc;
+}
+function foldClock(g) { g.raceAccum = foldedAccum(g); g.raceStart = null; }
 const raceRemain  = g => (g.countdownSec || 0) - raceElapsed(g);
 const raceOver    = g => raceRemain(g) <= 0;
 const perQuestion = g => !!g && g.type === 'quiz' && g.quizTimer === 'question';
@@ -721,13 +787,21 @@ const hasClock    = g => !!g && (g.type === 'race' || (g.type === 'quiz' && !!g.
 const clockColor  = (rem, perQ) => rem <= (perQ ? 3 : 10) ? '#fb7185' : rem <= (perQ ? 5 : 30) ? '#fbbf24' : '#ffffff';
 const clockText   = (rem, perQ) => perQ ? String(Math.max(0, Math.ceil(rem))) : fmtClock(Math.max(0, rem));
 
-let raceTicker = null, lastTickSec = null;
+let raceTicker = null, lastTickSec = null, buzzedFor = null;
 function syncRaceTimer() {
   const g = liveGame();
-  const needs = ui.screen === 'live' && g && hasClock(g) && g.raceStart;
+  const needs = ui.screen === 'live' && g && hasClock(g) && g.raceStart && !raceOver(g);
   if (needs && !raceTicker) raceTicker = setInterval(raceTick, 200);
   if (!needs && raceTicker) { clearInterval(raceTicker); raceTicker = null; lastTickSec = null; }
 }
+/* The clock saves nothing. "Time is up" is derived from raceStart + countdownSec,
+   so every device works it out independently and none of them race to write the
+   same mutation. It also fixes a bug that was already here: this only ran while
+   somebody had the live screen open, so a clock that expired on the board screen
+   never recorded the expiry at all. computeResults() already re-derives DNF from
+   a missing finishSec, so the cached r.dnf it used to set was redundant. The one
+   thing that genuinely cannot be derived is the tally of unanswered questions,
+   so that moved to the 'next-q' action, which one person deliberately taps. */
 function raceTick() {
   const g = liveGame();
   const el = document.getElementById('raceClock');
@@ -741,11 +815,9 @@ function raceTick() {
     if (whole > 0 && whole <= (perQ ? 3 : 5)) tick();
   }
   if (rem <= 0) {
-    g.raceStart = null;
-    g.raceAccum = (g.countdownSec || 0) * 1000;
-    if (g.type === 'race') (g.results || []).forEach(r => { if (r.finishSec == null) r.dnf = true; });
-    if (perQ) g.passed = (g.passed || 0) + 1;
-    save(); buzzer(); render();
+    const run = g.id + ':' + (g.qNo || 1) + ':' + (g.raceStart || 0);
+    if (buzzedFor !== run) { buzzedFor = run; buzzer(); }
+    render();                      // -> syncRaceTimer() stops the ticker
   }
 }
 
@@ -785,7 +857,7 @@ function viewRace(g) {
       ? '<div class="text-4xl">' + (MEDALS[place] || place + 'th') + '</div>' +
         '<div class="text-3xl font-extrabold tabnum" style="color:' + k.color + '">' + fmtSecs(r.finishSec) + '</div>' +
         '<button data-act="unfinish" data-id="' + r.kidId + '" class="mt-2 rounded-2xl bg-white/10 px-3 py-2 text-sm font-bold text-white/60 hover:bg-white/20">↩ still going</button>'
-      : (r.dnf
+      : (r.dnf || over
         ? '<div class="text-3xl">😴</div><div class="text-xl font-extrabold text-white/50">Ran out of time</div>'
         : '<div class="mt-1 text-sm font-bold uppercase tracking-wider text-white/40">racing…</div>' +
           '<button data-act="done" data-id="' + r.kidId + '" class="mt-2 w-full rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-500 py-4 text-2xl font-extrabold text-emerald-950 shadow-lg transition active:scale-95 hover:brightness-110">Done!</button>');
@@ -837,6 +909,8 @@ function viewResults() {
       '<div class="text-white/50">' + fmtLongDay(g.date) + '</div>' +
       (champs ? '<div class="mt-2 text-lg font-extrabold text-amber-300">Winner: ' + champs + '</div>'
               : '<div class="mt-2 text-lg font-extrabold text-white/60">No winner this round</div>') + '</div>' +
+    (r.changed ? '<div class="mb-3 rounded-2xl border-2 border-amber-300/60 bg-amber-400/15 p-3 text-center text-sm font-bold text-amber-100">' +
+      '⚠️ The score changed on the other board while this screen was open. These numbers are the up-to-date ones — tap again to award them.</div>' : '') +
     '<div class="space-y-2">' + lines + '</div>' +
     '<p class="mt-3 text-center text-sm text-white/40">Stars are worked out from the places — nudge any number if you want to.</p>' +
     '<div class="mt-5 flex flex-wrap justify-center gap-2">' +
@@ -1046,6 +1120,27 @@ function profileModal() {
     '<div class="mt-4 flex justify-center gap-2">' + btn('modal-close', 'Close', { tone: 'ghost' }) + '</div>', 'modal-close');
 }
 
+/* Sounds are deliberately missing from this: muting a phone must not mute the
+   television, which is the one that ought to be making the noise. */
+function syncSettings() {
+  if (!FIREBASE_CONFIG) {
+    return '<p class="mt-4 rounded-2xl bg-white/5 p-3 text-sm text-white/50">Everything is saved inside this browser only. ' +
+      'Clearing your browsing data, or opening this file on another computer, starts an empty board.</p>';
+  }
+  if (shared()) {
+    return '<div class="mt-4 rounded-2xl bg-emerald-400/10 p-3">' +
+      '<div class="font-extrabold text-emerald-200">🔗 Sharing the family board</div>' +
+      '<p class="mt-1 text-sm text-emerald-100/70">Signed in as ' + esc((sync.user || {}).email || 'this account') + '. ' +
+      'Players, games and stars are the same on every signed-in device, and it all still works with the wifi off. Sounds stay set per device.</p>' +
+      btn('sync-out', 'Sign out of the shared board', { cls: 'mt-3 w-full py-2 text-sm' }) + '</div>';
+  }
+  return '<div class="mt-4 rounded-2xl bg-white/5 p-3">' +
+    '<div class="font-extrabold">📵 This device only</div>' +
+    '<p class="mt-1 text-sm text-white/50">This board lives inside this browser. Sign in to share one board with the rest of the family: ' +
+    'the same players and the same stars, on every device.</p>' +
+    btn('sync-in', '🔗 Sign in to share', { tone: 'primary', cls: 'mt-3 w-full py-2 text-sm' }) + '</div>';
+}
+
 function settingsModal() {
   const s = db.settings;
   const rows = [['first', '🥇 1st'], ['second', '🥈 2nd'], ['third', '🥉 3rd'], ['participation', '🙌 Playing']];
@@ -1062,7 +1157,7 @@ function settingsModal() {
       '<span class="text-2xl">' + (s.soundOn ? '🔊' : '🔇') + '</span><span class="flex-1">Sounds ' + (s.soundOn ? 'on' : 'off') + '</span>' +
       '<span class="' + (s.soundOn ? 'bg-emerald-400' : 'bg-white/20') + ' relative h-7 w-12 rounded-full transition">' +
         '<span class="absolute top-1 h-5 w-5 rounded-full bg-white transition-all ' + (s.soundOn ? 'left-6' : 'left-1') + '"></span></span></button>' +
-    '<p class="mt-4 rounded-2xl bg-white/5 p-3 text-sm text-white/50">Everything is saved inside this browser only. Clearing your browsing data, or opening this file on another computer, starts an empty board.</p>' +
+    syncSettings() +
     '<div class="mt-4 flex flex-wrap justify-between gap-2">' +
       btn('settings-save', '💾 Done', { tone: 'primary' }) +
       btn('wipe', '🗑 Erase everything', { tone: 'danger' }) +
@@ -1115,7 +1210,10 @@ function startGame() {
     createdAt: Date.now(), finishedAt: null
   };
   db.games.push(g);
-  save(); ui.undo = []; ui.setup = null; go('live');
+  save();
+  // the game must exist on the family board before any tap can score into it
+  if (shared()) sync.pushNow();
+  ui.undo = []; ui.setup = null; go('live');
 }
 
 function bumpScore(kidId, delta) {
@@ -1124,26 +1222,52 @@ function bumpScore(kidId, delta) {
     toast('Time is up — no more points.', 'bad'); return;
   }
   const r = (g.results || []).find(x => x.kidId === kidId); if (!r) return;
-  const before = r.correct || 0;
-  r.correct = Math.max(0, before + delta);
-  if (r.correct !== before) {
-    ui.undo.push({ kidId: kidId, delta: r.correct - before });
-    if (ui.undo.length > 40) ui.undo.shift();
-    // a correct answer ends the question: stop the clock, ready the next one
-    if (delta > 0 && perQuestion(g)) { g.raceStart = null; g.raceAccum = 0; g.qNo = (g.qNo || 1) + 1; }
-    delta > 0 ? blip() : unblip();
-    save(); render();
+  if (delta < 0 && (r.correct || 0) <= 0) return;          // nothing to take away
+  ui.undo.push({ kidId: kidId, delta: delta });
+  if (ui.undo.length > 40) ui.undo.shift();
+  delta > 0 ? blip() : unblip();
+  // a correct answer ends the question: stop the clock, ready the next one
+  const nextQ = delta > 0 && perQuestion(g)
+    ? [['raceStart', null], ['raceAccum', 0], ['qNo', (g.qNo || 1) + 1]] : null;
+
+  if (shared()) {
+    /* Firestore only, and nothing touched locally. The listener hands this
+       device its own write straight back, so the number still moves at once —
+       but adding delta here as well would count every tap twice. increment() is
+       what lets two people tap at the same instant and have both land. */
+    sync.bump(g.id, kidId, delta, nextQ);
+    return;
   }
+  r.correct = Math.max(0, (r.correct || 0) + delta);
+  if (nextQ) { g.raceStart = null; g.raceAccum = 0; g.qNo = (g.qNo || 1) + 1; }
+  save(); render();
 }
 
+/* The confirm screen holds a snapshot of the score taken when Finish was pressed.
+   If the other board keeps scoring after that, saving the snapshot would silently
+   throw those taps away — so the snapshot is fingerprinted and re-checked. */
+function scoreSig(g) {
+  // dnf is left out on purpose: computeResults derives it from a missing
+  // finishSec, which is already in here, so including it only adds false alarms
+  return (g.results || []).map(r =>
+    r.kidId + ':' + (r.correct || 0) + ':' + (r.finishSec == null ? '-' : r.finishSec)
+  ).join('|');
+}
 function openResults(g) {
-  ui.results = { gameId: g.id, rows: computeResults(g) };
+  ui.results = { gameId: g.id, rows: computeResults(g), sig: scoreSig(g) };
   go('results');
 }
 
 function saveResults() {
   const g = db.games.find(x => x.id === (ui.results || {}).gameId);
   if (!g) { go('board'); return; }
+  if (ui.results.sig != null && scoreSig(g) !== ui.results.sig) {
+    // re-derive from the score as it stands now and make them look again
+    ui.results = { gameId: g.id, rows: computeResults(g), sig: scoreSig(g), changed: true };
+    render();
+    toast('The score changed on the other board — check these numbers.', 'bad');
+    return;
+  }
   g.results = ui.results.rows.map(r => ({
     kidId: r.kidId,
     correct: Math.max(0, Number(r.correct) || 0),
@@ -1156,6 +1280,13 @@ function saveResults() {
   g.finishedAt = Date.now();
   g.raceStart = null;
   save();
+  if (shared()) {
+    /* The frozen result goes up straight away rather than on the debounce, and
+       then the live tallies come off: a late tap from the other board must not
+       leave the game contradicting the stars it just awarded. */
+    sync.pushNow();
+    sync.finalize(g.id);
+  }
   ui.results = null;
   ui.celebrate = g.id;
   ui.screen = 'board';
@@ -1192,40 +1323,66 @@ const actions = {
   plus:  (el, id) => bumpScore(id, +1),
   minus: (el, id) => bumpScore(id, -1),
   undo: () => {
+    // your own taps only — the undo stack is per device, never shared
     const last = ui.undo.pop(); if (!last) return;
     const g = liveGame(); if (!g) return;
-    const r = (g.results || []).find(x => x.kidId === last.kidId);
-    if (r) r.correct = Math.max(0, (r.correct || 0) - last.delta);
-    unblip(); save(); render();
+    const r = (g.results || []).find(x => x.kidId === last.kidId); if (!r) return;
+    unblip();
+    if (shared()) { sync.bump(g.id, last.kidId, -last.delta, null); return; }
+    r.correct = Math.max(0, (r.correct || 0) - last.delta);
+    save(); render();
   },
   'finish-quiz': () => { const g = liveGame(); if (g) openResults(g); },
 
   /* --- the clock (race countdown, and the quiz's optional timer) --- */
   'race-start': () => {
     const g = liveGame(); if (!g || !hasClock(g) || raceOver(g)) return;
-    g.raceStart = Date.now(); save(); dingDone(); render();
+    dingDone();
+    if (shared()) { sync.clock(g.id, [['raceStart', Date.now()]], g.clockSeq); return; }
+    g.raceStart = Date.now(); save(); render();
   },
   'next-q': () => {
     const g = liveGame(); if (!perQuestion(g)) return;
+    /* Getting here means the clock ran out with nobody answering — a correct
+       answer moves the question on through bumpScore instead. This tally is the
+       only part of expiry that cannot be derived, so it lives on the deliberate
+       tap of one person rather than in the clock tick of every device. */
+    const over = raceOver(g);
+    dingDone();
+    if (shared()) {
+      // keyed by question number, so both boards tapping this is one pass, not two
+      if (over) sync.markPassed(g.id, g.qNo || 1);
+      sync.clock(g.id, [['raceStart', Date.now()], ['raceAccum', 0], ['qNo', (g.qNo || 1) + 1]], g.clockSeq);
+      return;
+    }
+    if (over) g.passed = (g.passed || 0) + 1;
     g.raceAccum = 0; g.raceStart = Date.now(); g.qNo = (g.qNo || 1) + 1;
-    save(); dingDone(); render();
+    save(); render();
   },
   'race-pause': () => {
-    const g = liveGame(); if (!g || !g.raceStart) return;
-    g.raceAccum = (g.raceAccum || 0) + (Date.now() - g.raceStart);
-    g.raceStart = null; save(); render();
+    const g = liveGame(); if (!g || !g.raceStart || raceOver(g)) return;
+    if (shared()) { sync.clock(g.id, [['raceStart', null], ['raceAccum', foldedAccum(g)]], g.clockSeq); return; }
+    foldClock(g); save(); render();
   },
   done: (el, id) => {
     const g = liveGame(); if (!g) return;
     if (!g.raceStart && !g.raceAccum) { toast('Start the timer first.', 'bad'); return; }
+    // the clock no longer stops itself, so this is what keeps a late tap out
+    if (raceOver(g)) { toast('Time is up — no more finishers.', 'bad'); return; }
     const r = (g.results || []).find(x => x.kidId === id); if (!r || r.finishSec != null) return;
-    r.finishSec = Math.max(0.1, Math.round(raceElapsed(g) * 10) / 10);
-    r.dnf = false;
-    save(); dingDone(); render();
+    const sec = Math.max(0.1, Math.round(raceElapsed(g) * 10) / 10);
+    dingDone();
+    /* If both boards tap Done for the same child, the later write wins. The two
+       readings are a moment apart, and as soon as one lands the other board's
+       button disappears, so the honest answer and the winning one agree. */
+    if (shared()) { sync.setFinish(g.id, id, sec); return; }
+    r.finishSec = sec; r.dnf = false;
+    save(); render();
   },
   unfinish: (el, id) => {
     const g = liveGame(); if (!g) return;
     const r = (g.results || []).find(x => x.kidId === id); if (!r) return;
+    if (shared()) { sync.clearFinish(g.id, id); return; }
     r.finishSec = null; r.dnf = raceOver(g);
     save(); render();
   },
@@ -1234,9 +1391,18 @@ const actions = {
     const left = (g.results || []).filter(r => r.finishSec == null && !r.dnf);
     if (left.length && !raceOver(g) &&
         !confirm(left.map(r => kidOf(r.kidId).name).join(', ') + ' have not finished. They will get no placement stars. Finish the game now?')) return;
-    if (g.raceStart) { g.raceAccum = (g.raceAccum || 0) + (Date.now() - g.raceStart); g.raceStart = null; }
-    left.forEach(r => { r.dnf = true; });
-    save(); openResults(g);
+    if (shared()) {
+      // computeResults derives DNF from a missing finishSec, so only the clock
+      // needs sending — and marking dnf locally would just be undone by the
+      // next snapshot, making the results screen think the score had changed.
+      sync.clock(g.id, [['raceStart', null], ['raceAccum', foldedAccum(g)]], g.clockSeq);
+      foldClock(g);
+    } else {
+      foldClock(g);
+      left.forEach(r => { r.dnf = true; });
+      save();
+    }
+    openResults(g);
   },
 
   /* --- abort: throw the running game away, nobody scores --- */
@@ -1244,8 +1410,16 @@ const actions = {
     const g = liveGame();
     if (!g) { ui.results = null; go('board'); return; }
     if (!confirm('Abort "' + g.name + '"? It is not saved and nobody gets any stars.')) return;
-    db.games = db.games.filter(x => x.id !== g.id);
+    /* Tombstone rather than remove. If the other board is offline mid-scoring, a
+       delete lets its queued taps recreate the game as a fragment with no payout
+       and no status — a zombie that either hides forever or crashes the render.
+       An 'aborted' game is in neither liveGames() nor doneGames(), so it is just
+       as invisible, and a late tap lands somewhere harmless. */
+    g.status = 'aborted';
+    g.finishedAt = Date.now();
+    foldClock(g);
     save();
+    if (shared()) { sync.pushNow(); sync.finalize(g.id); }
     ui.results = null;
     ui.undo = [];
     unblip();
@@ -1278,7 +1452,7 @@ const actions = {
   'game-delete': (el, id) => {
     const g = db.games.find(x => x.id === id); if (!g) return;
     if (!confirm('Delete "' + g.name + '" from ' + fmtDay(g.date) + '? The stars from it will be taken off the board.')) return;
-    db.games = db.games.filter(x => x.id !== id);
+    g.status = 'deleted';           // tombstone, for the same reason as abort
     save(); ui.expand = null; ui.edit = null; render(); toast('Game deleted.');
   }
 };
@@ -1304,6 +1478,8 @@ Object.assign(actions, {
     if (!name) { toast('Give this player a name first.', 'bad'); return; }
     if (e.id) {
       const k = db.kids.find(x => x.id === e.id);
+      // the other board may have taken this player off while the form was open
+      if (!k) { ui.kidEdit = null; render(); toast('That player is no longer on the board.', 'bad'); return; }
       Object.assign(k, { name: name, emoji: e.emoji, color: e.color, photo: e.photo });
     } else {
       db.kids.push({ id: uid(), name: name, emoji: e.emoji, color: e.color, photo: e.photo, active: true, createdAt: Date.now() });
@@ -1323,12 +1499,30 @@ Object.assign(actions, {
   profile: (el, id) => { ui.profile = id; render(); },
   'modal-close': () => { ui.profile = null; render(); },
   'settings-open': () => { ui.settingsOpen = true; render(); },
+  'sync-in': () => { ui.joinHide = true; if (sync) sync.signIn(); },
+  'sync-out': () => {
+    if (!confirm('Sign out of the family board? This device keeps everything it has now, but it stops matching the others.')) return;
+    ui.settingsOpen = false;
+    sync.signOut();
+    toast('Signed out. This board is on its own again.');
+  },
+  'join-hide': () => { ui.joinHide = true; render(); },
   'settings-save': () => { save(); ui.settingsOpen = false; render(); },
   'sound-toggle': () => { db.settings.soundOn = !db.settings.soundOn; save(); render(); if (db.settings.soundOn) dingDone(); },
   wipe: () => {
     if (!confirm('Erase every player, game and star? This cannot be undone.')) return;
+    // on a shared board, "erase everything" has to say whose everything
+    const family = shared() && confirm(
+      'This board is shared.\n\nOK — erase the FAMILY board, for everybody, on every device.\n\n' +
+      'Cancel — erase only this device and leave the family board alone. This device signs out of it.');
     if (!confirm('Really erase everything? Last chance.')) return;
-    try { localStorage.removeItem(KEY); } catch (e) {}
+    if (shared()) {
+      if (family) { db.kids = []; db.games = []; sync.pushNow(); }
+      // signing out detaches the listeners first, so clearing db below stays
+      // this device's business and does not take her board down with it
+      else sync.signOut();
+    }
+    try { localStorage.removeItem(KEY); localStorage.removeItem(ADOPTED_KEY); } catch (e) {}
     db = blankDB();
     Object.assign(ui, { screen: 'board', filter: 'all', filterDate: today(), setup: null, results: null,
                         celebrate: null, kidEdit: null, profile: null, settingsOpen: false, expand: null, edit: null, undo: [] });
@@ -1380,11 +1574,518 @@ document.addEventListener('keydown', e => {
   }
 });
 
-window.addEventListener('beforeunload', () => { if (liveGame()) save(); });
+window.addEventListener('beforeunload', () => { if (liveGame()) save(); if (shared()) sync.pushNow(); });
+
+
+/* ======================================================= SHARED BOARD ==
+   Two households, one board. Firestore holds the family's players, games and
+   stars; Google sign-in decides who may read them, because this page is
+   published publicly and the children's names and photos are in there.
+
+   Three rules shape everything below.
+
+   1. localStorage is written unconditionally, signed in or not. If any of this
+      ever misbehaves, the board is still sitting there in the browser.
+   2. db keeps the shape it has always had, a game holding a results[] array.
+      Only the wire format differs: a live game travels as a roster plus
+      per-player maps, so two people tapping at once both land. docToGame folds
+      those maps straight back into results[], so no view code changed.
+   3. While shared, the live score is changed ONLY in Firestore. The listener
+      hands back your own write immediately, so it still feels instant — and
+      changing db as well would apply every tap twice.
+   ======================================================================== */
+
+/* ------------------------------------------------------------ wire format */
+function kidToDoc(k) {
+  return { name: k.name || '', emoji: k.emoji || '🙂', color: k.color || COLORS[0],
+           photo: k.photo || null, active: k.active !== false,
+           createdAt: k.createdAt || Date.now() };
+}
+function docToKid(id, d) {
+  return { id: id, name: d.name || '', emoji: d.emoji || '🙂', color: d.color || COLORS[0],
+           photo: d.photo || null, active: d.active !== false, createdAt: d.createdAt || 0 };
+}
+
+/* A live game's score and clock are deliberately absent from this. They belong
+   to the targeted operations further down, so this whole-document push and
+   those operations can never overwrite one another's work. */
+function gameToDoc(g) {
+  const d = {
+    date: g.date, name: g.name, type: g.type, payout: payoutOf(g),
+    quizTimer: g.quizTimer || null,
+    countdownSec: g.countdownSec == null ? null : g.countdownSec,
+    status: g.status, createdAt: g.createdAt || Date.now(),
+    finishedAt: g.finishedAt || null,
+    roster: (g.results || []).map(r => r.kidId)
+  };
+  if (g.status !== 'live') d.results = (g.results || []).map(cleanRow);
+  return d;
+}
+function cleanRow(r) {
+  return { kidId: r.kidId, correct: Math.max(0, Number(r.correct) || 0),
+           finishSec: r.finishSec == null ? null : Number(r.finishSec),
+           dnf: !!r.dnf, place: r.place || null,
+           stars: Math.max(0, Math.round(Number(r.stars)) || 0) };
+}
+function docToGame(id, d, prev) {
+  const g = {
+    id: id, date: d.date || today(), name: d.name || 'Game',
+    type: d.type === 'race' ? 'race' : 'quiz',
+    payout: { ...DEFAULT_PAYOUT, ...(d.payout || {}) },
+    quizTimer: d.quizTimer || null,
+    countdownSec: d.countdownSec == null ? null : d.countdownSec,
+    status: d.status || 'done', createdAt: d.createdAt || 0,
+    finishedAt: d.finishedAt || null,
+    raceStart: null, raceAccum: 0, qNo: d.qNo || 1, passed: 0,
+    clockSeq: d.clockSeq || 0, results: []
+  };
+  if (g.status === 'live') {
+    const cor = d.correct || {}, fin = d.finishSec || {}, dnf = d.dnf || {};
+    g.passed = Object.keys(d.passedQs || {}).length;
+    g.raceAccum = d.raceAccum || 0;
+    g.results = (d.roster || []).map(kid => ({
+      kidId: kid, correct: Math.max(0, Number(cor[kid]) || 0),
+      finishSec: fin[kid] == null ? null : Number(fin[kid]),
+      dnf: !!dnf[kid], place: null, stars: 0
+    }));
+    /* raceStart is the sending device's Date.now(), which means nothing here if
+       the two clocks disagree — and on a fifteen-second question, two seconds of
+       drift is enough for this screen to buzz while the other still takes taps.
+       sentAt says when it was sent, so the pair can be re-expressed as "this
+       long ago" in local terms. clockSeq makes that happen exactly once per
+       change: re-basing on every redelivery would walk the clock backwards. It
+       also settles pause against resume, where the older write simply loses. */
+    if (prev && prev.clockSeq === g.clockSeq) {
+      g.raceStart = prev.raceStart;
+      g.raceAccum = prev.raceAccum;
+    } else if (d.raceStart && d.sentAt) {
+      g.raceStart = Date.now() - Math.max(0, d.sentAt - d.raceStart);
+    }
+  } else {
+    g.results = Array.isArray(d.results) ? d.results.map(cleanRow) : [];
+  }
+  return g;
+}
+
+/* ------------------------------------------------------------- the engine */
+sync = {
+  on: false, ready: false, status: 'off',      // off | connecting | synced | error
+  user: null, U: null, F: null, fdb: null, auth: null,
+  unsub: [], timer: null, dirty: false, blurHooked: false,
+  celebrated: null, warnedTwo: null, warnedSchema: false,
+  shadow: { kids: {}, games: {}, settings: null },
+  snap: { kids: null, games: null, fam: null },
+
+  async boot() {
+    if (!FIREBASE_CONFIG) return;
+    this.setStatus('connecting');
+    let A, U, S;
+    try {
+      /* This app is one classic script full of globals; the Firebase SDK is
+         ESM. A dynamic import bridges the two, and the catch gives the whole
+         fail-soft story for free: blocked, offline, or opened as a file:// and
+         the board simply carries on by itself, exactly as it always has. */
+      const B = 'https://www.gstatic.com/firebasejs/12.19.0/';
+      [A, U, S] = await Promise.all([
+        import(B + 'firebase-app.js'),
+        import(B + 'firebase-auth.js'),
+        import(B + 'firebase-firestore.js')
+      ]);
+    } catch (e) {
+      console.warn('KidsRank: Firebase did not load — this device stays on its own.', e);
+      this.setStatus('off');
+      return;
+    }
+    try {
+      const app = A.initializeApp(FIREBASE_CONFIG);
+      this.U = U; this.F = S;
+      this.auth = U.getAuth(app);
+      try {
+        /* Offline reads and queued writes. Multi-tab, because the television in
+           one tab and a second tab of the same page would otherwise fight over
+           the cache. Some private windows have no IndexedDB, hence the fall
+           back to memory rather than failing to start at all. */
+        this.fdb = S.initializeFirestore(app, {
+          localCache: S.persistentLocalCache({ tabManager: S.persistentMultipleTabManager() })
+        });
+      } catch (e) {
+        console.warn('KidsRank: no offline cache here, using memory only.', e);
+        this.fdb = S.getFirestore(app);
+      }
+      this.ready = true;
+      U.onAuthStateChanged(this.auth, u => this.onUser(u));
+    } catch (e) {
+      console.warn('KidsRank: Firebase would not start.', e);
+      this.setStatus('off');
+    }
+  },
+
+  async signIn() {
+    if (!this.ready) { toast('The shared board is not switched on in this copy yet.', 'bad'); return; }
+    const p = () => new this.U.GoogleAuthProvider();
+    try {
+      await this.U.signInWithPopup(this.auth, p());
+    } catch (e) {
+      const c = e.code || '';
+      // a blocked popup is normal on phones; a full-page redirect always works
+      if (/popup|unsupported|cancelled/i.test(c)) {
+        try { await this.U.signInWithRedirect(this.auth, p()); return; } catch (e2) {}
+      }
+      console.warn('KidsRank: sign-in failed', e);
+      toast('Could not sign in. ' + c, 'bad');
+    }
+  },
+  async signOut() {
+    this.detach();
+    this.setStatus('off');
+    try { if (this.auth) await this.U.signOut(this.auth); } catch (e) {}
+  },
+  onUser(u) {
+    this.user = u || null;
+    if (!u) { this.detach(); this.setStatus('off'); this.repaint(); return; }
+    this.attach();
+  },
+
+  attach() {
+    this.detach();
+    this.setStatus('connecting');
+    const F = this.F, fdb = this.fdb;
+    const onErr = e => {
+      if ((e.code || '') === 'permission-denied') {
+        toast('That Google account is not on the family board.', 'bad');
+        this.signOut();
+      } else {
+        console.warn('KidsRank: listener error', e);
+        this.setStatus('error');
+      }
+    };
+    this.unsub.push(F.onSnapshot(F.doc(fdb, 'families', FAMILY_ID),
+      s => { this.snap.fam = s; this.apply('fam'); }, onErr));
+    this.unsub.push(F.onSnapshot(F.collection(fdb, 'families', FAMILY_ID, 'kids'),
+      s => { this.snap.kids = s; this.apply('kids'); }, onErr));
+    this.unsub.push(F.onSnapshot(F.collection(fdb, 'families', FAMILY_ID, 'games'),
+      s => { this.snap.games = s; this.apply('games'); }, onErr));
+  },
+  detach() {
+    this.unsub.forEach(u => { try { u(); } catch (e) {} });
+    this.unsub = [];
+    this.on = false;
+    clearTimeout(this.timer);
+    this.snap = { kids: null, games: null, fam: null };
+    this.shadow = { kids: {}, games: {}, settings: null };
+  },
+
+  /* ---------------------------------------------------------------- coming in */
+  apply(src) {
+    if (!this.snap.kids || !this.snap.games) return;      // wait for both
+    if (!this.on) this.firstJoin(); else this.absorb(src);
+  },
+
+  /* The first snapshot decides how this device joins. Nothing is destroyed on
+     the way in: the local board is copied to a timestamped backup key before
+     anything is adopted or replaced. */
+  firstJoin() {
+    const remoteEmpty = this.snap.kids.empty && this.snap.games.empty;
+    const localHas = db.kids.length > 0 || db.games.length > 0;
+    let joined = false;
+    try { joined = localStorage.getItem(ADOPTED_KEY) === '1'; } catch (e) {}
+
+    if (remoteEmpty && localHas) {
+      this.backup(); this.markJoined();
+      this.on = true;
+      this.rebuildShadow();          // empty, so this sends the lot up
+      this.setStatus('synced');
+      /* Not the debounce. A snapshot arriving in that window would run absorb()
+         and replace this board with the empty remote one before it ever left. */
+      this.pushNow();
+      toast('This board is now the family board.');
+      this.repaint();
+      return;
+    }
+
+    if (!remoteEmpty && localHas && !joined) {
+      const useFamily = confirm(
+        'The family board already has ' + plural(this.snap.kids.size, 'player') +
+        ' and ' + plural(this.snap.games.size, 'game') + '.\n\n' +
+        'OK — use the family board. This device\u2019s own ' + plural(db.kids.length, 'player') +
+        ' and ' + plural(db.games.length, 'game') + ' are kept in a backup, off the board.\n\n' +
+        'Cancel — put THIS device\u2019s board up as the family board instead.');
+      this.backup(); this.markJoined();
+      if (!useFamily) {
+        if (!confirm('Replace the family board with this device\u2019s board? The ' +
+                     plural(this.snap.games.size, 'game') + ' already up there will come off, for everybody.')) {
+          this.setStatus('off');      // signed in but not joined; nothing written
+          return;
+        }
+        this.on = true;
+        this.rebuildShadow();         // shadow is what is up there now...
+        this.setStatus('synced');
+        this.pushNow();               // ...so this replaces it with this board
+        toast('The family board now matches this device.');
+        this.repaint();
+        return;
+      }
+    }
+
+    this.backup(); this.markJoined();
+    this.on = true;
+    this.absorb();
+    // nobody has written the family settings yet, so this device seeds them
+    if (!this.snap.fam || !this.snap.fam.exists()) this.flush();
+  },
+
+  absorb(src) {
+    const wasLive = liveGame();
+    const prevById = {};
+    db.games.forEach(g => { prevById[g.id] = g; });
+
+    const kids = [], games = [];
+    this.snap.kids.forEach(d => kids.push(docToKid(d.id, d.data())));
+    this.snap.games.forEach(d => games.push(docToGame(d.id, d.data(), prevById[d.id])));
+    kids.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    games.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    db.kids = kids;
+    db.games = games;
+
+    if (this.snap.fam && this.snap.fam.exists()) {
+      const f = this.snap.fam.data();
+      // settings bind straight to db, so a remote value must not land mid-typing
+      const a = document.activeElement;
+      const typing = a && a.matches && a.matches('[data-bind^="settings"]');
+      if (!typing) {
+        if (f.boardTitle) db.settings.boardTitle = f.boardTitle;
+        if (f.defaultPayout) db.settings.defaultPayout = { ...DEFAULT_PAYOUT, ...f.defaultPayout };
+      }
+      if ((f.schema || 1) > SCHEMA && !this.warnedSchema) {
+        this.warnedSchema = true;
+        toast('This device is running an older version — reload the page.', 'bad');
+      }
+    }
+
+    this.rebuildShadow(src);
+    writeLocal();
+    this.setStatus('synced');
+    this.afterAbsorb(wasLive);
+  },
+
+  afterAbsorb(wasLive) {
+    /* The other board pressed Finish. Without this, the television just drops
+       back to "no game is running" at the exact moment of the payoff. */
+    if (wasLive) {
+      const g = db.games.find(x => x.id === wasLive.id);
+      if (g && g.status === 'done' && this.celebrated !== g.id &&
+          ui.screen !== 'results' && !ui.results) {
+        this.celebrated = g.id;
+        ui.celebrate = g.id; ui.screen = 'board'; ui.countUp = true;
+        this.repaint(true);
+        const champs = winnersOf(g);
+        confetti(champs.length ? champs.map(k => k.color).concat(['#fde047', '#ffffff']) : COLORS);
+        fanfare();
+        return;
+      }
+    }
+    // a game started elsewhere: follow it in, but never yank anyone out of a form
+    const now = liveGame();
+    if (now && (!wasLive || wasLive.id !== now.id) && ui.screen === 'board' &&
+        !ui.setup && !ui.kidEdit && !ui.profile && !ui.settingsOpen && !ui.celebrate) {
+      ui.screen = 'live'; ui.countUp = false;
+    }
+    /* Two games at once. liveGame() picks the same one on both boards, so the
+       scoring still agrees, but somebody has to be told the other exists. */
+    const many = liveGames();
+    if (many.length > 1) {
+      const sig = many.map(g => g.id).join(',');
+      if (this.warnedTwo !== sig) {
+        this.warnedTwo = sig;
+        toast('Two games are running. Abort the one you do not want.', 'bad');
+      }
+    }
+    this.repaint();
+  },
+
+  /* A remote change repaints the whole page, which steals focus, closes a phone
+     keyboard, and — since a half-cleared number box binds as 0 — can pin a star
+     field to zero mid-edit. So it waits for the caret to leave. Neither live
+     screen has a bound input, so scoring is never held up by this. */
+  repaint(force) {
+    if (!document.getElementById('app')) return;
+    const a = document.activeElement;
+    if (!force && a && a.matches && a.matches('[data-bind]')) {
+      this.dirty = true;
+      this.hookBlur();
+      return;
+    }
+    this.dirty = false;
+    render();
+  },
+  hookBlur() {
+    if (this.blurHooked) return;
+    this.blurHooked = true;
+    document.addEventListener('focusout', () => setTimeout(() => {
+      const a = document.activeElement;
+      if (this.dirty && !(a && a.matches && a.matches('[data-bind]'))) {
+        this.dirty = false;
+        render();
+      }
+    }, 0));
+  },
+
+  /* ---------------------------------------------------------------- going out */
+  settingsDoc() {
+    return { boardTitle: db.settings.boardTitle || 'Family Game Board',
+             defaultPayout: { ...DEFAULT_PAYOUT, ...(db.settings.defaultPayout || {}) } };
+  },
+  /* What we believe is up there, so a flush sends only what actually changed.
+     Only the collection that moved is re-hashed: a score tap is a games
+     snapshot, and re-hashing every child's photograph on each tap of a quiz
+     would make an old television feel slow for no reason at all. */
+  rebuildShadow(src) {
+    if (!src || src === 'kids') {
+      const sk = {};
+      this.snap.kids.forEach(d => { sk[d.id] = JSON.stringify(kidToDoc(docToKid(d.id, d.data()))); });
+      this.shadow.kids = sk;
+    }
+    if (!src || src === 'games') {
+      const sg = {};
+      this.snap.games.forEach(d => { sg[d.id] = JSON.stringify(gameToDoc(docToGame(d.id, d.data()))); });
+      this.shadow.games = sg;
+    }
+    if (!src || src === 'fam') {
+      let ss = null;
+      if (this.snap.fam && this.snap.fam.exists()) {
+        const f = this.snap.fam.data();
+        ss = JSON.stringify({ boardTitle: f.boardTitle || 'Family Game Board',
+                              defaultPayout: { ...DEFAULT_PAYOUT, ...(f.defaultPayout || {}) } });
+      }
+      this.shadow.settings = ss;
+    }
+  },
+
+  // debounced, so typing a board title is one write and not twenty
+  flush() {
+    if (!this.on) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.push(), 400);
+  },
+  pushNow() { clearTimeout(this.timer); this.push(); },
+
+  push() {
+    if (!this.on) return;
+    const F = this.F, fdb = this.fdb;
+    const kidRef  = id => F.doc(fdb, 'families', FAMILY_ID, 'kids', id);
+    const gameRef = id => F.doc(fdb, 'families', FAMILY_ID, 'games', id);
+    const fail = e => this.failed(e);
+    try {
+      const sdoc = this.settingsDoc(), sj = JSON.stringify(sdoc);
+      if (sj !== this.shadow.settings) {
+        this.shadow.settings = sj;
+        F.setDoc(F.doc(fdb, 'families', FAMILY_ID), { ...sdoc, schema: SCHEMA }, { merge: true }).catch(fail);
+      }
+      const seenK = {};
+      db.kids.forEach(k => {
+        const doc = kidToDoc(k), j = JSON.stringify(doc);
+        seenK[k.id] = 1;
+        if (this.shadow.kids[k.id] !== j) {
+          this.shadow.kids[k.id] = j;
+          F.setDoc(kidRef(k.id), doc, { merge: true }).catch(fail);
+        }
+      });
+      Object.keys(this.shadow.kids).forEach(id => {
+        if (!seenK[id]) { delete this.shadow.kids[id]; F.deleteDoc(kidRef(id)).catch(fail); }
+      });
+      const seenG = {};
+      db.games.forEach(g => {
+        const doc = gameToDoc(g), j = JSON.stringify(doc);
+        seenG[g.id] = 1;
+        if (this.shadow.games[g.id] !== j) {
+          this.shadow.games[g.id] = j;
+          F.setDoc(gameRef(g.id), doc, { merge: true }).catch(fail);
+        }
+      });
+      Object.keys(this.shadow.games).forEach(id => {
+        if (!seenG[id]) { delete this.shadow.games[id]; F.deleteDoc(gameRef(id)).catch(fail); }
+      });
+    } catch (e) { this.failed(e); }
+  },
+
+  /* Writes are fired and forgotten. Offline, the promise does not settle until a
+     server acknowledges it, so waiting on one would freeze the tap. A rejection
+     must still never pass in silence, or an evening of scoring quietly evaporates. */
+  failed(e) {
+    console.warn('KidsRank: a write was rejected', e);
+    // forget what we thought was up there, so the next change re-sends everything
+    this.shadow = { kids: {}, games: {}, settings: null };
+    this.setStatus('error');
+    toast('Could not reach the family board. Nothing is lost — this device still has it all.', 'bad');
+  },
+
+  /* --------------------------------------------------- the live game's own
+     These fields belong to these operations and to nothing else. Firestore
+     keeps a document's writes in the order they were made, so the setDoc that
+     creates a game always lands before any tap that follows it. */
+  op(gameId, pairs) {
+    if (!this.on || !pairs.length) return;
+    const F = this.F;
+    const args = [F.doc(this.fdb, 'families', FAMILY_ID, 'games', gameId)];
+    pairs.forEach(p => {
+      // a FieldPath rather than a dotted string, so a player id can hold anything
+      args.push(Array.isArray(p[0]) ? new F.FieldPath(...p[0]) : p[0]);
+      args.push(p[1]);
+    });
+    F.updateDoc.apply(null, args).catch(e => this.failed(e));
+  },
+  bump(gameId, kidId, delta, clockPairs) {
+    let p = [[['correct', kidId], this.F.increment(delta)]];
+    if (clockPairs && clockPairs.length) {
+      const g = db.games.find(x => x.id === gameId) || {};
+      p = p.concat(clockPairs, [['clockSeq', (g.clockSeq || 0) + 1], ['sentAt', Date.now()]]);
+    }
+    this.op(gameId, p);
+  },
+  setFinish(gameId, kidId, sec) {
+    this.op(gameId, [[['finishSec', kidId], sec], [['dnf', kidId], false]]);
+  },
+  clearFinish(gameId, kidId) {
+    this.op(gameId, [[['finishSec', kidId], null], [['dnf', kidId], false]]);
+  },
+  // keyed by question number, so a second board writing the same one is a no-op
+  markPassed(gameId, qNo) {
+    this.op(gameId, [[['passedQs', String(qNo)], true]]);
+  },
+  clock(gameId, pairs, seq) {
+    this.op(gameId, pairs.concat([['clockSeq', (seq || 0) + 1], ['sentAt', Date.now()]]));
+  },
+  // once the stars are awarded the live tallies are noise, and a late tap would
+  // only make the game contradict itself
+  finalize(gameId) {
+    const D = this.F.deleteField;
+    this.op(gameId, [['correct', D()], ['finishSec', D()], ['dnf', D()],
+                     ['passedQs', D()], ['raceStart', null]]);
+  },
+
+  /* ---------------------------------------------------------------- utilities */
+  backup() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) localStorage.setItem(KEY + '.backup.' + Date.now(), raw);
+    } catch (e) { console.warn('KidsRank: could not write a backup', e); }
+  },
+  markJoined() { try { localStorage.setItem(ADOPTED_KEY, '1'); } catch (e) {} },
+  setStatus(s) {
+    if (this.status === s) return;
+    this.status = s;
+    this.repaint();
+  }
+};
+
 
 /* ================================================================== INIT */
 render();
-if (!db.kids.length) actions['kid-new']();   // first run: land straight in the add-player form
+sync.boot();
+/* First run lands straight in the add-player form — unless there is a family
+   board to join, in which case the players are most likely already on it and
+   the thing to do is sign in, not type them all in again. */
+if (!db.kids.length && !FIREBASE_CONFIG) actions['kid-new']();
 </script>
 </body>
 </html>

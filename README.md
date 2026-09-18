@@ -3,7 +3,9 @@
 A star-award ranking board for the games you play with the kids — a different game
 each day, scored live on the big screen, with a running leaderboard across all days.
 
-No internet, no accounts, no installing anything.
+No internet, no accounts, no installing anything. If you want two screens to
+show the same board — one in the living room, one in somebody's pocket — there
+is an optional [shared family board](#sharing-one-board-between-devices).
 
 ## How to open it
 
@@ -82,14 +84,15 @@ no stars for anyone, no History entry, nothing on the board.
   name, move it to a different date, edit the stars, or delete it.
 - **🧒 Kids** — add, rename, change the photo or colour. Removing a kid *retires*
   them so old games keep their name and the history stays honest.
-- **⚙️ Settings** — board title, default star payout, sound on/off.
+- **⚙️ Settings** — board title, default star payout, sound on/off, and joining
+  or leaving the shared family board.
 
 ## Where the data lives — please read
 
 Everything is saved in **this browser's own storage on this computer** (one entry
 called `kidsrank.v1`). Nothing is uploaded anywhere and no one else can see it.
 
-That means the history is lost if you:
+That means, on its own, the history is lost if you:
 
 - clear your browsing data / cookies / "site data",
 - open the file in a *different* browser, or on a different computer,
@@ -101,16 +104,99 @@ is completely safe. The history survives all of that.
 Photos are shrunk to 320×320 before saving (about 5–25 KB each), so a family's
 worth of pictures and hundreds of games fit comfortably.
 
-If you'd like a **Backup / Restore** pair of buttons — one to save the whole
-history to a file, one to load it back on another laptop — that's a small
-addition; just ask.
+If a second device needs the same players and the same stars, that is what the
+shared board below is for.
+
+## Sharing one board between devices
+
+Switched off out of the box. Switch it on and everybody who signs in sees **one
+board**: the same players, the same games, the same running total of stars. Enter
+the kids once, on one device, and they are simply there on the others.
+
+It also means you can **score from a phone while the television shows the board**.
+Tap a point on the phone and the number moves on the TV a moment later; the timer
+counts down on both; when you press Finish, the confetti goes off on both.
+
+Nothing about being offline changes. Every device keeps its own full copy in
+`localStorage`, exactly as before, so the board still works with the wifi off —
+taps made in a dead spot go up on their own the next time there is a signal.
+
+### What is shared, and what stays on the device
+
+| Shared with everyone | Stays on this device |
+|---|---|
+| Players — names, photos, colours | Sound on/off |
+| Games, live and finished | Which screen you are looking at, filters |
+| Stars and the leaderboard | Half-typed forms, and your own undo |
+| Board title, default star payout | |
+
+Sound is per device on purpose: muting your phone should not mute the television.
+
+### Turning it on (about five minutes, once)
+
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) and
+   create a project. The free Spark plan is far more than a family needs, and it
+   is not paused for going quiet.
+2. **Build → Firestore Database → Create database**, in *production mode*.
+3. **Build → Authentication → Get started → Google**, and enable it.
+4. **Authentication → Settings → Authorized domains**, and add the domain the
+   board is served from — `gururcp.github.io`.
+5. **Project settings → Your apps → Web app**. Copy the `firebaseConfig` object
+   and paste it into `index.html`, over the `null` here near the top:
+
+   ```js
+   const FIREBASE_CONFIG = null;
+   ```
+
+   It becomes, with your own values:
+
+   ```js
+   const FIREBASE_CONFIG = {
+     apiKey: "…", authDomain: "…", projectId: "…",
+     storageBucket: "…", messagingSenderId: "…", appId: "…"
+   };
+   ```
+
+   This config is *not* a secret — it names the project, it does not grant access
+   to it. What grants access is step 6.
+
+6. Open `firestore.rules`, replace the two example addresses with the real Google
+   addresses of the people allowed on the board, and deploy them:
+
+   ```sh
+   npx firebase-tools@latest login
+   npx firebase-tools@latest deploy --only firestore:rules --project <your-project-id>
+   ```
+
+   **Do not skip this.** Until those rules are deployed, the database is running
+   on whatever default the console gave it. Anyone who signs in with any Google
+   account could read the children's names and photographs.
+
+7. Open the board on each device and tap **🔗 Sign in**. One tap, once — it stays
+   signed in.
+
+### The first time each device signs in
+
+- If the family board is **empty** and this device has players on it, this
+  device's board becomes the family board.
+- If the family board **already has** players and this device also has its own,
+  you are asked which one to keep. The other is not merged — merging silently
+  produces two of every child — and it is not thrown away either: the board as it
+  stood is copied to a `kidsrank.v1.backup.…` entry in the same browser storage
+  before anything is replaced.
+- After that, the family board is simply the board.
+
+**⚙️ Settings → Sign out of the shared board** leaves it at any time. The device
+keeps everything it has; it just stops matching the others.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `index.html` | The entire app — screens, scoring, storage. Nothing else needed. |
+| `index.html` | The entire app — screens, scoring, storage, sharing. Nothing else needed. |
 | `tailwind.js` | Tailwind CSS saved locally so it looks right with no internet. |
+| `firestore.rules` | Who is allowed on the shared board. The only thing protecting it. |
+| `firebase.json` | So the rules above can be deployed with one command. |
 | `README.md` | This file. |
 
 Made to be copied: put the whole folder on a USB stick or in OneDrive and it runs

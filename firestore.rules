@@ -1,0 +1,47 @@
+rules_version = '2';
+
+/* Who may read the family board.
+   ---------------------------------------------------------------------------
+   This is the only thing protecting the data. The Firebase config sitting in
+   index.html is public by design and is not a secret — it names the project,
+   it does not grant access. These rules do.
+
+   The board holds children's names and their photographs, and the app is
+   published on a public URL, so the list below is an allowlist of exactly the
+   people in the family. Anyone else who signs in — with any Google account,
+   from anywhere — is refused on every single read and write.
+
+   An allowlist of email addresses rather than of user ids, because a user id
+   does not exist until that person's first sign-in, and you cannot write a rule
+   that lets somebody in for the first time using an id you do not have yet.
+
+   TO ADD SOMEBODY: put their Google address in the list, lower-case, then
+   deploy again:  npx firebase-tools@latest deploy --only firestore:rules
+*/
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function member() {
+      return request.auth != null
+          && 'email' in request.auth.token
+          && request.auth.token.email_verified == true
+          && request.auth.token.email.lower() in [
+               // ---- PUT THE TWO GOOGLE ADDRESSES HERE, lower-case ----
+               'first.person@example.com',
+               'second.person@example.com'
+             ];
+    }
+
+    // The family board, and everything filed under it: players and games.
+    match /families/{familyId} {
+      allow read, write: if member();
+
+      match /{rest=**} {
+        allow read, write: if member();
+      }
+    }
+
+    // Anything else in this database is closed. There is no default allow.
+  }
+}

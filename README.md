@@ -140,7 +140,8 @@ Firebase project (`kidsrank-aeeee`), and the two people allowed on it are set in
 
 **On each device, once:** open that URL and tap **🔗 Sign in** — in the banner at
 the top, or in ⚙️ Settings. Pick the Google account, and the device stays signed
-in from then on. Do the living-room screen and each phone.
+in from then on. Do the living-room screen and each phone. For an address with no
+Google account of its own, see *Signing in without a Google account* below.
 
 **It has to be that URL**, not a copy of `index.html` opened off the disk. Google
 sign-in does not work from a `file://` page, so a local copy can only ever be a
@@ -148,6 +149,37 @@ private board in that one browser. Useful as a fallback; it will not share.
 
 The rest of this section is only needed to **change** who is on the board, or to
 point a fork of this at a Firebase project of its own.
+
+#### Signing in without a Google account
+
+Some addresses cannot sign in with Google. A Google Workspace **alias** is the
+usual reason: mail sent to it arrives perfectly well, but it is not an account,
+so Google says "no account found". `neha@choudhari.one` is one of those.
+
+For those, tap **✉ Email me a link instead** under the sign-in button, type the
+address, and a one-use sign-in link is emailed to it. Tapping that link **on the
+device being signed in** finishes the job, and that device stays signed in from
+then on. The link needs nothing of the address except that it receives mail.
+
+Two things worth knowing:
+
+- **Alias mail lands in the primary account's inbox.** That is how aliases work,
+  so a link for `neha@` arrives in `gaurav@`'s Gmail. One filter fixes it:
+  Gmail → Search options → *To:* `neha@choudhari.one` → Create filter →
+  **Forward it to** her own inbox. Set the forwarding address up first, under
+  Settings → Forwarding.
+- **Open the link on the device you want signed in.** Tapping it on the laptop
+  signs the laptop in, not the phone. If the link is opened somewhere other than
+  the browser that asked for it, the app asks for the address again — that is
+  Firebase refusing to let a forwarded link sign a stranger in, not a fault.
+
+This has to be switched on in Firebase once: **Authentication → Sign-in method →
+Email/Password → enable, and tick "Email link (passwordless sign-in)"**. Without
+it the app reports that email links are not switched on for this board.
+
+Either way of signing in gives the same board. `firestore.rules` does not care
+which was used — it checks the address, and Firebase treats a completed email
+link as a verified address exactly as it does a Google sign-in.
 
 #### Who is allowed on
 

@@ -88,6 +88,7 @@ const FIREBASE_CONFIG = null;
 const FAMILY_ID   = 'home';            // one board per family; this is its name
 const SCHEMA      = 1;                 // bumped if the shared format ever changes
 const ADOPTED_KEY = 'kidsrank.joined';
+const LINK_KEY    = 'kidsrank.linkmail';  // address a sign-in link went to
 
 const EMOJIS = ['🦊','🐧','🦁','🐯','🐨','🐼','🐵','🦄','🐙','🐢','🦉','🐝','🦖','🐬','🦋','🐰',
                 '🐶','🐱','🐹','🐷','🦈','🦜','🐳','🦕','🦥','🦩','🐞','🐊','⚽','🚀','🌟','🍭',
@@ -393,6 +394,7 @@ const ui = {
   kidEdit: null,
   profile: null,
   settingsOpen: false,
+  link: { mail: '', open: false, sent: '' },
   expand: null,
   edit: null,
   undo: [],
@@ -465,7 +467,8 @@ function joinBanner() {
     '<span class="min-w-[13rem] flex-1"><span class="block font-extrabold text-emerald-200">Join the family board</span>' +
     '<span class="block text-sm text-emerald-100/70">Sign in once on each device and everyone sees the same players and the same stars.</span></span>' +
     btn('sync-in', '🔗 Sign in', { tone: 'primary', cls: 'py-2 text-sm' }) +
-    btn('join-hide', 'Not now', { cls: 'py-2 text-sm' }) + '</div>';
+    btn('join-hide', 'Not now', { cls: 'py-2 text-sm' }) +
+    emailLinkForm() + '</div>';
 }
 
 function card(inner, cls) {
@@ -482,6 +485,29 @@ function btn(act, label, opts) {
   return '<button data-act="' + act + '"' + (opts.id ? ' data-id="' + opts.id + '"' : '') +
     ' class="rounded-2xl px-4 py-3 text-base font-extrabold shadow-lg transition active:scale-95 ' + tone + ' ' + (opts.cls || '') + '">' + label + '</button>';
 }
+/* Signing in by email link, for an address that is not a Google Account.
+   A Google Workspace alias is the case that needs it: mail sent to it arrives
+   perfectly well, but it can never sign in, because it is not an account. An
+   email link asks nothing of an address except that it receives mail. */
+function emailLinkForm() {
+  if (ui.link.sent) {
+    return '<div class="mt-3 w-full rounded-2xl bg-white/10 p-3 text-sm">' +
+      '<div class="font-extrabold text-emerald-200">\u2709 Link sent to ' + esc(ui.link.sent) + '</div>' +
+      '<p class="mt-1 text-white/60">Open that email <b>on this device</b> and tap the link. It signs this device in, ' +
+      'and then stays signed in. The link is good for one use.</p>' +
+      btn('link-reset', 'Use a different address', { cls: 'mt-2 w-full py-2 text-sm' }) + '</div>';
+  }
+  if (!ui.link.open) {
+    return btn('link-open', '\u2709 Email me a link instead', { cls: 'mt-2 w-full py-2 text-sm' });
+  }
+  return '<div class="mt-2 w-full">' +
+    '<input data-bind="link.mail" type="email" inputmode="email" autocomplete="email" ' +
+      'placeholder="you@example.com" value="' + esc(ui.link.mail) + '" class="' + INPUT_CLS + '">' +
+    '<p class="mt-1.5 text-xs text-white/45">For an address with no Google account of its own. ' +
+      'We email a sign-in link; tapping it on this device signs it in.</p>' +
+    btn('link-send', '\u2709 Send the link', { tone: 'primary', cls: 'mt-2 w-full py-2 text-sm' }) + '</div>';
+}
+
 function emptyState(icon, title, text, actionHtml) {
   return card('<div class="py-8 text-center"><div class="mb-3 animate-floaty text-5xl">' + icon + '</div>' +
     '<div class="text-xl font-extrabold">' + title + '</div>' +
@@ -1146,7 +1172,8 @@ function syncSettings() {
     '<div class="font-extrabold">📵 This device only</div>' +
     '<p class="mt-1 text-sm text-white/50">This board lives inside this browser. Sign in to share one board with the rest of the family: ' +
     'the same players and the same stars, on every device.</p>' +
-    btn('sync-in', '🔗 Sign in to share', { tone: 'primary', cls: 'mt-3 w-full py-2 text-sm' }) + '</div>';
+    btn('sync-in', '🔗 Sign in to share', { tone: 'primary', cls: 'mt-3 w-full py-2 text-sm' }) +
+    emailLinkForm() + '</div>';
 }
 
 function settingsModal() {
@@ -1180,7 +1207,7 @@ function modals() {
 }
 
 /* ============================================================== BINDINGS */
-const bindRoots = () => ({ setup: ui.setup, results: ui.results, edit: ui.edit, kidEdit: ui.kidEdit, settings: db.settings });
+const bindRoots = () => ({ setup: ui.setup, results: ui.results, edit: ui.edit, kidEdit: ui.kidEdit, settings: db.settings, link: ui.link });
 function setPath(path, value) {
   const parts = path.split('.');
   let obj = bindRoots()[parts[0]];
@@ -1515,6 +1542,9 @@ Object.assign(actions, {
     toast('Signed out. This board is on its own again.');
   },
   'join-hide': () => { ui.joinHide = true; render(); },
+  'link-open':  () => { ui.link.open = true; render(); },
+  'link-reset': () => { ui.link = { mail: '', open: true, sent: '' }; render(); },
+  'link-send':  () => { if (sync) sync.emailLinkSend(ui.link.mail); },
   'settings-save': () => { save(); ui.settingsOpen = false; render(); },
   'sound-toggle': () => { db.settings.soundOn = !db.settings.soundOn; save(); render(); if (db.settings.soundOn) dingDone(); },
   wipe: () => {
@@ -1533,7 +1563,8 @@ Object.assign(actions, {
     try { localStorage.removeItem(KEY); localStorage.removeItem(ADOPTED_KEY); } catch (e) {}
     db = blankDB();
     Object.assign(ui, { screen: 'board', filter: 'all', filterDate: today(), setup: null, results: null,
-                        celebrate: null, kidEdit: null, profile: null, settingsOpen: false, expand: null, edit: null, undo: [] });
+                        celebrate: null, kidEdit: null, profile: null, settingsOpen: false, expand: null, edit: null, undo: [],
+                        link: { mail: '', open: false, sent: '' } });
     render(); toast('Board cleared.');
   }
 });
@@ -1721,6 +1752,10 @@ sync = {
         this.fdb = S.getFirestore(app);
       }
       this.ready = true;
+      /* If this page was opened from a sign-in link, finish it before the auth
+         listener goes on, so the board arrives already signed in rather than
+         flashing "join the family board" at someone who has just done so. */
+      await this.emailLinkReturn();
       U.onAuthStateChanged(this.auth, u => this.onUser(u));
     } catch (e) {
       console.warn('KidsRank: Firebase would not start.', e);
@@ -1743,6 +1778,74 @@ sync = {
       toast('Could not sign in. ' + c, 'bad');
     }
   },
+  /* ---------------------------------------------------- signing in by email */
+  /* Firebase counts a completed email link as a verified address, on the same
+     footing as Google, so firestore.rules needs nothing added: the allowlist
+     already asks for email_verified and for the address itself. */
+  async emailLinkSend(email) {
+    if (!this.ready) { toast('The shared board is not switched on in this copy yet.', 'bad'); return; }
+    email = String(email || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('That does not look like an email address.', 'bad'); return; }
+    try {
+      await this.U.sendSignInLinkToEmail(this.auth, email, {
+        // straight back to this same page, which then completes the sign-in
+        url: location.origin + location.pathname,
+        handleCodeInApp: true
+      });
+      /* Kept because finishing the link needs the address again, and Firebase
+         deliberately does not carry it inside the link. */
+      try { localStorage.setItem(LINK_KEY, email); } catch (e) {}
+      ui.link = { mail: '', open: false, sent: email };
+      render();
+    } catch (e) {
+      const c = e.code || '';
+      toast(c === 'auth/operation-not-allowed'
+              ? 'Email links are not switched on for this board yet.'
+          : c === 'auth/invalid-email'
+              ? 'That does not look like an email address.'
+          : /continue-uri|unauthorized-domain/.test(c)
+              ? 'This address of the board is not authorised to send sign-in links.'
+          : 'Could not send the link. ' + c, 'bad');
+      console.warn('KidsRank: could not send a sign-in link', e);
+    }
+  },
+  async emailLinkReturn() {
+    let isLink = false;
+    try { isLink = this.U.isSignInWithEmailLink(this.auth, location.href); } catch (e) {}
+    if (!isLink) return;
+    let email = '';
+    try { email = localStorage.getItem(LINK_KEY) || ''; } catch (e) {}
+    /* Opened somewhere other than the browser that asked — a phone tapping a
+       link out of a laptop's inbox. The address has to be typed again; that is
+       Firebase refusing to let a forwarded link sign anybody in by itself. */
+    if (!email) email = String(prompt('Which email address was this link sent to?') || '').trim();
+    if (!email) {
+      this.cleanLinkUrl();
+      toast('Signing in needs the address the link was sent to.', 'bad');
+      return;
+    }
+    try {
+      await this.U.signInWithEmailLink(this.auth, email, location.href);
+      try { localStorage.removeItem(LINK_KEY); } catch (e) {}
+      ui.link = { mail: '', open: false, sent: '' };
+      toast('Signed in as ' + email);
+    } catch (e) {
+      const c = e.code || '';
+      toast(c === 'auth/invalid-email'
+              ? 'That is not the address this link was sent to.'
+          : /expired-action-code|invalid-action-code/.test(c)
+              ? 'That link has been used already, or has expired. Ask for a fresh one.'
+          : 'Could not finish signing in. ' + c, 'bad');
+      console.warn('KidsRank: email link sign-in failed', e);
+    }
+    this.cleanLinkUrl();
+  },
+  /* The one-time code is spent either way, and leaving it in the address bar
+     means a refresh retries a dead code and looks like a broken sign-in. */
+  cleanLinkUrl() {
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  },
+
   async signOut() {
     this.detach();
     this.setStatus('off');
@@ -1760,7 +1863,7 @@ sync = {
     const F = this.F, fdb = this.fdb;
     const onErr = e => {
       if ((e.code || '') === 'permission-denied') {
-        toast('That Google account is not on the family board.', 'bad');
+        toast('That account is not on the family board.', 'bad');
         this.signOut();
       } else {
         console.warn('KidsRank: listener error', e);

@@ -27,9 +27,10 @@ service cloud.firestore {
           && 'email' in request.auth.token
           && request.auth.token.email_verified == true
           && request.auth.token.email.lower() in [
-               // ---- PUT THE TWO GOOGLE ADDRESSES HERE, lower-case ----
-               'first.person@example.com',
-               'second.person@example.com'
+               // lower-case, always: the address above is lower-cased before
+               // it is compared, so a capital in here would never match
+               'gaurav@choudhari.one',
+               'neha@choudhari.one'
              ];
     }
 

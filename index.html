@@ -73,9 +73,17 @@ const KEY = 'kidsrank.v1';
 const DEFAULT_PAYOUT = { first: 5, second: 3, third: 2, participation: 1 };
 
 /* --- the shared family board (see SHARED BOARD, at the foot of this file) ---
-   Paste the Firebase web config object in below and both boards start sharing
-   one set of players, games and stars. Leave it null and this stays exactly
-   what it has always been: a private board inside this one browser. */
+   Deliberately null in the repository, and filled in when the page is published
+   by .github/inject-config.mjs, from the FIREBASE_CONFIG repository secret. So
+   the published board shares, and this file stays free of anything shaped like
+   an API key. The reasoning is in that script.
+
+   A copy opened straight off the disk therefore has no config, and is a private
+   board inside one browser — which is all it could ever be, since Google
+   sign-in does not work from a file:// page. To share, use the published URL.
+
+   The line below is matched exactly, character for character, by that script.
+   Changing it will fail the publish rather than quietly deploy a dead board. */
 const FIREBASE_CONFIG = null;
 const FAMILY_ID   = 'home';            // one board per family; this is its name
 const SCHEMA      = 1;                 // bumped if the shared format ever changes

@@ -1,0 +1,61 @@
+# Publishes the board to GitHub Pages.
+#
+# Pages used to serve the main branch directly. It cannot do that any more,
+# because the Firebase config is deliberately not in the branch — see
+# .github/inject-config.mjs. So the page is built here: check out the repo,
+# drop the config in, publish the result.
+#
+# Nothing else is built. There is no bundler and no dependencies to install;
+# it is one HTML file and a copy of Tailwind.
+
+name: Publish the board
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # so it can be re-published without a commit
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One publish at a time, and a newer push makes an in-flight one pointless.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Put the Firebase config into index.html
+        env:
+          FIREBASE_CONFIG: ${{ secrets.FIREBASE_CONFIG }}
+        run: node .github/inject-config.mjs
+
+      # Fails the build if the config did not land, rather than publishing a
+      # board where sign-in silently never appears.
+      - name: Check it landed
+        run: |
+          grep -q '"projectId"' index.html
+          ! grep -q 'const FIREBASE_CONFIG = null;' index.html
+          echo "config is in the page"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

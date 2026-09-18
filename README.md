@@ -280,6 +280,24 @@ and no sign-in, exactly as it began.
 **⚙️ Settings → Sign out of the shared board** leaves it at any time. The device
 keeps everything it has; it just stops matching the others.
 
+## The icon
+
+A smiling gold star, because stars are what the board hands out. It is **drawn by
+a script**, `icons/make-icons.py`, rather than kept only as a picture — so the
+colour, the shape of the star or the size of the grin can be changed by editing a
+number and running it again:
+
+```sh
+python icons/make-icons.py      # needs Pillow and numpy
+```
+
+That writes all four sizes at once. It draws at 2048 pixels and shrinks, which is
+what keeps the edges clean at the size a phone actually shows.
+
+**An icon already on a home screen does not update itself.** iOS keeps the
+picture it copied when the app was added. To pick up a new one, press and hold the
+icon, remove it, and add it again from Safari.
+
 ## Files
 
 | File | What it is |
@@ -290,6 +308,8 @@ keeps everything it has; it just stops matching the others.
 | `firebase.json` | So the rules above can be deployed with one command. |
 | `.github/workflows/pages.yml` | Publishes the board, config and all, on every push. |
 | `.github/inject-config.mjs` | Puts the Firebase config into the published page. |
+| `manifest.webmanifest` | Name and icons for when it is added to a phone's home screen. |
+| `icons/` | The home-screen icon, and `make-icons.py`, which draws it. |
 | `README.md` | This file. |
 
 Made to be copied: put the whole folder on a USB stick or in OneDrive and it runs

@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>KidsRank — Family Game Board</title>
 
+<!-- The home-screen icon: a smiling gold star, drawn by icons/make-icons.py.
+     apple-touch-icon is the one iOS reads; the manifest is for Android, and for
+     iOS 16.4 and later, which takes the name and the standalone display from it.
+     All of it is optional decoration — a copy of this file on its own, with no
+     icons folder beside it, still runs, it just gets a plain browser icon. -->
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1e1b4b">
+<meta name="apple-mobile-web-app-title" content="KidsRank">
+
 <!-- Tailwind: local copy first (works with no internet), CDN as a fallback -->
 <script src="tailwind.js"></script>
 <script>

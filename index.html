@@ -1,0 +1,1390 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>KidsRank — Family Game Board</title>
+
+<!-- Tailwind: local copy first (works with no internet), CDN as a fallback -->
+<script src="tailwind.js"></script>
+<script>
+  if (!window.tailwind) document.write('<scr' + 'ipt src="https://cdn.tailwindcss.com"></scr' + 'ipt>');
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<script>
+  if (window.tailwind) tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { display: ['"Baloo 2"', 'Trebuchet MS', 'Verdana', 'system-ui', 'sans-serif'] },
+        keyframes: {
+          pop:     { '0%': { transform: 'scale(1)' }, '40%': { transform: 'scale(1.16)' }, '100%': { transform: 'scale(1)' } },
+          floaty:  { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-7px)' } },
+          slideup: { '0%': { opacity: '0', transform: 'translateY(16px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },
+          zoomin:  { '0%': { opacity: '0', transform: 'scale(.82)' }, '100%': { opacity: '1', transform: 'scale(1)' } },
+          shake:   { '0%,100%': { transform: 'translateX(0)' }, '25%': { transform: 'translateX(-5px)' }, '75%': { transform: 'translateX(5px)' } },
+          shine:   { '0%,100%': { opacity: '.55' }, '50%': { opacity: '1' } }
+        },
+        animation: {
+          pop: 'pop .34s ease-out', floaty: 'floaty 2.8s ease-in-out infinite',
+          slideup: 'slideup .3s ease-out both', zoomin: 'zoomin .32s cubic-bezier(.2,1.3,.4,1) both',
+          shake: 'shake .32s', shine: 'shine 2.2s ease-in-out infinite'
+        }
+      }
+    }
+  }
+</script>
+<style>
+  html, body { height: 100%; }
+  body { -webkit-tap-highlight-color: transparent; }
+  button, [data-act] { touch-action: manipulation; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  .tabnum { font-variant-numeric: tabular-nums; }
+  .noselect { -webkit-user-select: none; user-select: none; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.16); border-radius: 99px; }
+</style>
+</head>
+<body class="min-h-full bg-slate-950 font-display text-slate-100 antialiased">
+
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-gradient-to-br from-indigo-950 via-violet-950 to-slate-950"></div>
+  <div class="pointer-events-none fixed inset-0 -z-10"
+       style="background:
+         radial-gradient(60rem 40rem at 15% -10%, rgba(99,102,241,.30), transparent 60%),
+         radial-gradient(50rem 34rem at 95% 8%, rgba(236,72,153,.20), transparent 60%),
+         radial-gradient(46rem 30rem at 50% 108%, rgba(34,211,238,.16), transparent 60%);"></div>
+
+  <div id="app" class="mx-auto max-w-6xl px-3 pb-28 pt-3 sm:px-5 sm:pt-5"></div>
+  <div id="modals"></div>
+
+  <canvas id="fx" class="pointer-events-none fixed inset-0 z-[60] hidden"></canvas>
+  <div id="toast" class="pointer-events-none fixed bottom-5 left-1/2 z-[70] hidden -translate-x-1/2 rounded-2xl px-5 py-3 text-center text-base font-bold shadow-2xl"></div>
+  <input id="photoInput" type="file" accept="image/*" class="hidden" />
+
+<script>
+/* ============================================================================
+   KidsRank — a single-file family game-night ranking board.
+   No server, no build step. All data lives in localStorage under one key.
+   ========================================================================== */
+
+const KEY = 'kidsrank.v1';
+const DEFAULT_PAYOUT = { first: 5, second: 3, third: 2, participation: 1 };
+
+const EMOJIS = ['🦊','🐧','🦁','🐯','🐨','🐼','🐵','🦄','🐙','🐢','🦉','🐝','🦖','🐬','🦋','🐰',
+                '🐶','🐱','🐹','🐷','🦈','🦜','🐳','🦕','🦥','🦩','🐞','🐊','⚽','🚀','🌟','🍭',
+                '🎈','🎸','🧢','🍕'];
+const COLORS = ['#f43f5e','#fb923c','#facc15','#4ade80','#22d3ee','#60a5fa','#a78bfa','#f472b6','#34d399','#e879f9'];
+const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
+
+/* ---------------------------------------------------------------- helpers */
+const uid   = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const pad   = n => String(n).padStart(2, '0');
+const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
+const dstr  = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const today = () => dstr(new Date());
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function parseDate(s) { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d); }
+function fmtDay(s) {
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (s === today()) return 'Today';
+  if (s === dstr(y)) return 'Yesterday';
+  return parseDate(s).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+function fmtLongDay(s) {
+  return parseDate(s).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+function fmtClock(sec) { sec = Math.max(0, Math.ceil(sec)); return pad(Math.floor(sec / 60)) + ':' + pad(sec % 60); }
+function fmtSecs(sec) {
+  if (sec == null) return '—';
+  return sec >= 60 ? Math.floor(sec / 60) + 'm ' + pad(Math.round(sec % 60)) + 's' : sec.toFixed(1) + 's';
+}
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+/* ---------------------------------------------------------------- storage */
+function blankDB() {
+  return {
+    version: 1,
+    kids: [],
+    games: [],
+    settings: { boardTitle: 'Family Game Board', defaultPayout: { ...DEFAULT_PAYOUT }, soundOn: true }
+  };
+}
+function loadDB() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return blankDB();
+    const d = JSON.parse(raw), b = blankDB();
+    return {
+      version: 1,
+      kids:  Array.isArray(d.kids)  ? d.kids  : [],
+      games: Array.isArray(d.games) ? d.games : [],
+      settings: { ...b.settings, ...(d.settings || {}),
+                  defaultPayout: { ...DEFAULT_PAYOUT, ...((d.settings || {}).defaultPayout || {}) } }
+    };
+  } catch (e) {
+    console.warn('KidsRank: could not read saved data, starting fresh.', e);
+    return blankDB();
+  }
+}
+let db = loadDB();
+
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(db));
+    return true;
+  } catch (e) {
+    toast('Storage is full. Remove a photo or delete some old games.', 'bad');
+    console.warn('KidsRank: save failed', e);
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------ kid lookups */
+function kidOf(id) {
+  return db.kids.find(k => k.id === id) ||
+         { id: id, name: 'Removed player', emoji: '❓', color: '#64748b', photo: null, active: false };
+}
+const activeKids = () => db.kids.filter(k => k.active !== false);
+
+function avatar(k, px, opts) {
+  opts = opts || {};
+  const inner = k.photo
+    ? '<img src="' + k.photo + '" alt="' + esc(k.name) + '" class="h-full w-full object-cover">'
+    : '<span style="font-size:' + Math.round(px * 0.54) + 'px;line-height:1">' + (k.emoji || '🙂') + '</span>';
+  const glow = opts.glow ? 'box-shadow:0 0 0 4px ' + k.color + '55, 0 12px 34px ' + k.color + '55;' : 'box-shadow:0 6px 18px rgba(0,0,0,.35);';
+  return '<span class="inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full bg-white/10" ' +
+         'style="width:' + px + 'px;height:' + px + 'px;border:3px solid ' + k.color + ';' + glow + '">' + inner + '</span>';
+}
+
+/* ------------------------------------------------------------------ photo */
+function pickPhoto(cb) {
+  const inp = document.getElementById('photoInput');
+  inp.value = '';
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) processPhoto(f, cb); };
+  inp.click();
+}
+// Center-crops to a square, shrinks to 320px and re-encodes as JPEG so a 4MB
+// phone photo becomes ~25KB of base64 — localStorage only holds about 5MB total.
+function processPhoto(file, cb) {
+  if (!/^image\//.test(file.type)) { toast('That file is not a picture.', 'bad'); return; }
+  const fr = new FileReader();
+  fr.onerror = () => toast('Could not read that file.', 'bad');
+  fr.onload = () => {
+    const img = new Image();
+    img.onerror = () => toast('That picture could not be opened.', 'bad');
+    img.onload = () => {
+      const S = 320, cv = document.createElement('canvas');
+      cv.width = cv.height = S;
+      const ctx = cv.getContext('2d');
+      const side = Math.min(img.width, img.height);
+      ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, S, S);
+      let out = cv.toDataURL('image/jpeg', 0.82);
+      if (out.length > 90000) out = cv.toDataURL('image/jpeg', 0.6);
+      cb(out);
+    };
+    img.src = fr.result;
+  };
+  fr.readAsDataURL(file);
+}
+
+/* ------------------------------------------------------------------ sound */
+let audioCtx = null;
+function ac() {
+  if (!db.settings.soundOn) return null;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { if (!audioCtx) audioCtx = new AC(); if (audioCtx.state === 'suspended') audioCtx.resume(); return audioCtx; }
+  catch (e) { return null; }
+}
+function tone(freq, start, dur, gain, type) {
+  const c = ac(); if (!c) return;
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = type || 'triangle'; o.frequency.value = freq;
+  o.connect(g); g.connect(c.destination);
+  const t = c.currentTime + start;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(gain == null ? 0.16 : gain, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+const blip    = () => tone(880, 0, 0.12, 0.13);
+const unblip  = () => tone(320, 0, 0.12, 0.10);
+const dingDone= () => { tone(784, 0, 0.16); tone(1175, 0.09, 0.20); };
+const tick    = () => tone(1320, 0, 0.06, 0.08, 'square');
+function buzzer() { tone(180, 0, 0.5, 0.20, 'sawtooth'); tone(140, 0.14, 0.5, 0.18, 'sawtooth'); }
+function fanfare() { [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.13, 0.5, 0.2)); }
+
+/* --------------------------------------------------------------- fx/toast */
+let toastTimer = null;
+function toast(msg, kind) {
+  const el = document.getElementById('toast');
+  el.className = 'pointer-events-none fixed bottom-5 left-1/2 z-[70] -translate-x-1/2 rounded-2xl px-5 py-3 ' +
+    'text-center text-base font-bold shadow-2xl animate-slideup ' +
+    (kind === 'bad' ? 'bg-rose-500 text-white' : 'bg-emerald-400 text-emerald-950');
+  el.textContent = msg;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 3200);
+}
+
+function confetti(colors, ms) {
+  const cv = document.getElementById('fx');
+  const ctx = cv.getContext('2d');
+  const W = window.innerWidth, H = window.innerHeight;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = W * dpr; cv.height = H * dpr;
+  cv.classList.remove('hidden');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cols = (colors && colors.length) ? colors : COLORS;
+  const P = [];
+  for (let i = 0; i < 150; i++) P.push({
+    x: Math.random() * W, y: -20 - Math.random() * H * 0.6,
+    w: 5 + Math.random() * 8, vy: 1.8 + Math.random() * 3.2, vx: -1.2 + Math.random() * 2.4,
+    a: Math.random() * Math.PI, va: -0.12 + Math.random() * 0.24, col: cols[i % cols.length]
+  });
+  const t0 = performance.now(), life = ms || 2800;
+  (function frame(t) {
+    ctx.clearRect(0, 0, W, H);
+    P.forEach(p => {
+      p.x += p.vx; p.y += p.vy; p.a += p.va;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+      ctx.fillStyle = p.col; ctx.fillRect(-p.w / 2, -p.w / 2, p.w, p.w * 0.62); ctx.restore();
+    });
+    if (t - t0 < life) requestAnimationFrame(frame);
+    else { ctx.clearRect(0, 0, W, H); cv.classList.add('hidden'); }
+  })(t0);
+}
+
+function animateCounts() {
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const to = Number(el.dataset.count) || 0, t0 = performance.now(), dur = 700;
+    (function f(t) {
+      const k = Math.min(1, (t - t0) / dur);
+      el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(f);
+    })(t0);
+  });
+}
+
+/* =============================================================== SCORING ==
+   One place decides places and stars, so the live screen, the saved record
+   and the leaderboard can never disagree.
+   Quiz : ranked by correct answers, standard competition ranking for ties
+          (3/3/1 -> 1st, 1st, 3rd). A kid on zero correct never takes a place.
+   Race : ranked by finish time. Anyone still going when the countdown ended
+          is DNF: no place, no placement stars.
+   ========================================================================= */
+function computeResults(g) {
+  const rows = (g.results || []).map(r => ({ ...r }));
+
+  if (g.type === 'quiz') {
+    const sorted = rows.slice().sort((a, b) => (b.correct || 0) - (a.correct || 0));
+    let place = 0, prevScore = null, seen = 0;
+    sorted.forEach(r => {
+      seen++;
+      const sc = r.correct || 0;
+      if (sc !== prevScore) { place = seen; prevScore = sc; }
+      r.place = sc > 0 ? place : null;
+    });
+  } else {
+    const done = rows.filter(r => r.finishSec != null && !r.dnf).sort((a, b) => a.finishSec - b.finishSec);
+    done.forEach((r, i) => { r.place = i + 1; r.dnf = false; });
+    rows.filter(r => r.finishSec == null || r.dnf).forEach(r => { r.place = null; r.dnf = true; });
+  }
+
+  const p = g.payout || DEFAULT_PAYOUT;
+  rows.forEach(r => {
+    const base = r.place === 1 ? p.first : r.place === 2 ? p.second : r.place === 3 ? p.third : 0;
+    r.stars = (Number(base) || 0) + (Number(p.participation) || 0);
+  });
+  return rows;
+}
+
+/* ---------------------------------------------------------- data queries */
+const liveGame  = () => db.games.find(g => g.status === 'live') || null;
+const doneGames = () => db.games.filter(g => g.status === 'done');
+
+function rangeStart(filter) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  if (filter === 'week')  { d.setDate(d.getDate() - 6); return dstr(d); }
+  if (filter === 'month') { d.setDate(1); return dstr(d); }
+  return null;
+}
+function filteredGames() {
+  const all = doneGames();
+  if (ui.filter === 'date') return all.filter(g => g.date === ui.filterDate);
+  const from = rangeStart(ui.filter);
+  return from ? all.filter(g => g.date >= from) : all;
+}
+
+function standings(games) {
+  const m = new Map();
+  const row = k => {
+    if (!m.has(k.id)) m.set(k.id, { kid: k, stars: 0, played: 0, g: 0, s: 0, b: 0 });
+    return m.get(k.id);
+  };
+  activeKids().forEach(row);
+  games.forEach(g => (g.results || []).forEach(r => {
+    const t = row(kidOf(r.kidId));
+    t.stars += Number(r.stars) || 0;
+    t.played++;
+    if (r.place === 1) t.g++; else if (r.place === 2) t.s++; else if (r.place === 3) t.b++;
+  }));
+  const list = [...m.values()].sort((a, b) =>
+    b.stars - a.stars || b.g - a.g || b.s - a.s || a.kid.name.localeCompare(b.kid.name));
+  let rank = 0, prev = null;
+  list.forEach((t, i) => { if (t.stars !== prev) { rank = i + 1; prev = t.stars; } t.rank = rank; });
+  return list;
+}
+
+const winnersOf = g => (g.results || []).filter(r => r.place === 1).map(r => kidOf(r.kidId));
+
+/* --------------------------------------------------------------- UI state */
+const ui = {
+  screen: 'board',
+  filter: 'all',
+  filterDate: today(),
+  setup: null,
+  results: null,
+  celebrate: null,
+  kidEdit: null,
+  profile: null,
+  settingsOpen: false,
+  expand: null,
+  edit: null,
+  undo: [],
+  countUp: true
+};
+
+function go(screen) {
+  ui.screen = screen;
+  ui.countUp = (screen === 'board');
+  window.scrollTo(0, 0);
+  render();
+}
+
+function render() {
+  const views = { board: viewBoard, new: viewNew, live: viewLive, results: viewResults, history: viewHistory, kids: viewKids };
+  const view = views[ui.screen] || viewBoard;
+  document.getElementById('app').innerHTML = shellTop() + view();
+  document.getElementById('modals').innerHTML = modals();
+  if (ui.countUp) { ui.countUp = false; animateCounts(); }
+  syncRaceTimer();
+}
+
+/* ---------------------------------------------------------- shell / atoms */
+function shellTop() {
+  const tabs = [['board', '🏆', 'Board'], ['new', '🎮', 'New game'], ['history', '📅', 'History'], ['kids', '🧒', 'Kids']];
+  const onLive = (ui.screen === 'live' || ui.screen === 'results');
+  const live = liveGame();
+
+  const nav = tabs.map(t => {
+    const on = ui.screen === t[0];
+    return '<button data-act="nav" data-id="' + t[0] + '" class="flex items-center gap-1.5 rounded-2xl px-3 py-2 text-sm font-extrabold transition sm:px-4 sm:text-base ' +
+      (on ? 'bg-white text-indigo-950 shadow-lg' : 'text-white/70 hover:bg-white/10 hover:text-white') + '">' +
+      '<span class="text-base sm:text-lg">' + t[1] + '</span><span class="hidden sm:inline">' + t[2] + '</span></button>';
+  }).join('');
+
+  const banner = (live && !onLive)
+    ? '<button data-act="resume" class="mb-4 flex w-full items-center gap-3 rounded-2xl border-2 border-amber-300/60 bg-amber-400/15 px-4 py-3 text-left transition hover:bg-amber-400/25">' +
+      '<span class="animate-shine text-2xl">🔴</span><span class="flex-1"><span class="block font-extrabold text-amber-200">Game in progress: ' + esc(live.name) + '</span>' +
+      '<span class="block text-sm text-amber-100/70">Tap to jump back in</span></span><span class="text-xl">▶</span></button>'
+    : '';
+
+  return '<div class="mb-4 flex flex-wrap items-center gap-2">' +
+    '<button data-act="nav" data-id="board" class="mr-auto flex items-center gap-2 text-left">' +
+      '<span class="text-2xl sm:text-3xl">🏅</span>' +
+      '<span class="text-lg font-extrabold leading-tight tracking-tight sm:text-2xl">' + esc(db.settings.boardTitle || 'Family Game Board') + '</span>' +
+    '</button>' +
+    '<div class="flex items-center gap-1 rounded-3xl bg-white/10 p-1 backdrop-blur">' + nav +
+      '<button data-act="settings-open" title="Settings" class="rounded-2xl px-2.5 py-2 text-lg text-white/70 hover:bg-white/10 hover:text-white">⚙️</button>' +
+    '</div></div>' + banner;
+}
+
+function card(inner, cls) {
+  return '<div class="rounded-3xl border border-white/10 bg-white/[0.07] p-4 shadow-xl backdrop-blur sm:p-5 ' + (cls || '') + '">' + inner + '</div>';
+}
+function btn(act, label, opts) {
+  opts = opts || {};
+  const tone = {
+    primary: 'bg-gradient-to-br from-emerald-400 to-teal-500 text-emerald-950 hover:brightness-110',
+    hero:    'bg-gradient-to-br from-amber-300 to-orange-400 text-amber-950 hover:brightness-110',
+    ghost:   'bg-white/10 text-white hover:bg-white/20',
+    danger:  'bg-rose-500/90 text-white hover:bg-rose-500'
+  }[opts.tone || 'ghost'];
+  return '<button data-act="' + act + '"' + (opts.id ? ' data-id="' + opts.id + '"' : '') +
+    ' class="rounded-2xl px-4 py-3 text-base font-extrabold shadow-lg transition active:scale-95 ' + tone + ' ' + (opts.cls || '') + '">' + label + '</button>';
+}
+function emptyState(icon, title, text, actionHtml) {
+  return card('<div class="py-8 text-center"><div class="mb-3 animate-floaty text-5xl">' + icon + '</div>' +
+    '<div class="text-xl font-extrabold">' + title + '</div>' +
+    '<p class="mx-auto mt-1 max-w-md text-white/60">' + text + '</p>' +
+    (actionHtml ? '<div class="mt-5 flex flex-wrap justify-center gap-2">' + actionHtml + '</div>' : '') + '</div>');
+}
+function fieldLabel(t) {
+  return '<div class="mb-1.5 text-xs font-extrabold uppercase tracking-wider text-white/50">' + t + '</div>';
+}
+const INPUT_CLS = 'w-full rounded-2xl border-2 border-white/15 bg-white/10 px-4 py-3 text-base font-bold text-white placeholder-white/35 outline-none transition focus:border-emerald-300 focus:bg-white/15';
+
+/* ============================================================ BOARD VIEW */
+function filterChips() {
+  const chips = [['all', 'All time'], ['month', 'This month'], ['week', 'Last 7 days'], ['date', 'One day']];
+  const row = chips.map(c => {
+    const on = ui.filter === c[0];
+    return '<button data-act="filter" data-id="' + c[0] + '" class="rounded-full px-3.5 py-2 text-sm font-extrabold transition ' +
+      (on ? 'bg-white text-indigo-950 shadow' : 'bg-white/10 text-white/70 hover:bg-white/20') + '">' + c[1] + '</button>';
+  }).join('');
+  const picker = ui.filter === 'date'
+    ? '<input type="date" value="' + ui.filterDate + '" data-act="filter-date" class="rounded-full border-2 border-white/15 bg-white/10 px-3 py-1.5 text-sm font-bold text-white outline-none focus:border-emerald-300">'
+    : '';
+  return '<div class="mb-4 flex flex-wrap items-center gap-2">' + row + picker + '</div>';
+}
+
+function podium(list) {
+  const top = list.filter(t => t.stars > 0).slice(0, 3);
+  if (!top.length) return '';
+  const order = top.length >= 3 ? [top[1], top[0], top[2]] : top.length === 2 ? [top[1], top[0]] : [top[0]];
+  const h = { 1: 'h-28 sm:h-36', 2: 'h-20 sm:h-24', 3: 'h-14 sm:h-16' };
+  const cols = order.map(t => {
+    const p = t.rank <= 3 ? t.rank : 3;
+    const size = p === 1 ? 92 : 68;
+    return '<button data-act="profile" data-id="' + t.kid.id + '" class="flex flex-1 flex-col items-center justify-end gap-2">' +
+      (p === 1 ? '<div class="animate-floaty text-3xl sm:text-4xl">👑</div>' : '') +
+      '<div class="' + (p === 1 ? 'animate-pop' : '') + '">' + avatar(t.kid, size, { glow: p === 1 }) + '</div>' +
+      '<div class="max-w-[7rem] truncate text-center text-sm font-extrabold sm:text-base">' + esc(t.kid.name) + '</div>' +
+      '<div class="text-lg font-extrabold text-amber-300 tabnum">⭐ ' + t.stars + '</div>' +
+      '<div class="flex w-full items-start justify-center rounded-t-2xl border-x-2 border-t-2 border-white/20 bg-gradient-to-b from-white/25 to-white/5 pt-2 text-2xl ' + h[p] + '">' +
+        (MEDALS[p] || '') + '</div>' +
+    '</button>';
+  }).join('');
+  return card('<div class="-mb-4 flex items-end justify-center gap-2 sm:-mb-5 sm:gap-5">' + cols + '</div>', 'mb-4 overflow-hidden');
+}
+
+function boardRow(t) {
+  const medals = ['🥇' + t.g, '🥈' + t.s, '🥉' + t.b].join(' ');
+  const isTop = t.rank === 1 && t.stars > 0;
+  return '<button data-act="profile" data-id="' + t.kid.id + '" class="flex w-full items-center gap-3 rounded-2xl border-2 p-3 text-left transition hover:bg-white/10 ' +
+    (isTop ? 'border-amber-300/60 bg-amber-300/10' : 'border-white/10 bg-white/5') + '">' +
+    '<span class="w-8 shrink-0 text-center text-xl font-extrabold ' + (isTop ? 'text-amber-300' : 'text-white/40') + ' tabnum">' +
+      (t.stars > 0 ? (MEDALS[t.rank] || t.rank) : '–') + '</span>' +
+    avatar(t.kid, 52) +
+    '<span class="min-w-0 flex-1">' +
+      '<span class="block truncate text-lg font-extrabold leading-tight">' + esc(t.kid.name) + (isTop ? ' 👑' : '') + '</span>' +
+      '<span class="block text-sm text-white/50">' + medals + ' · ' + plural(t.played, 'game') + '</span>' +
+    '</span>' +
+    '<span class="shrink-0 text-right"><span class="block text-2xl font-extrabold text-amber-300 tabnum sm:text-3xl" data-count="' + t.stars + '">' + t.stars + '</span>' +
+      '<span class="block text-[11px] font-bold uppercase tracking-wider text-white/40">stars</span></span>' +
+  '</button>';
+}
+
+function viewBoard() {
+  if (!db.kids.length) {
+    return emptyState('🧒', 'Add your players first', 'Give each kid a name, a photo or an animal, and a colour. Then you can start your first game.',
+      btn('nav', '➕ Add players', { tone: 'primary', id: 'kids' }));
+  }
+  const games = filteredGames();
+  const list = standings(games);
+  const totalStars = list.reduce((a, t) => a + t.stars, 0);
+
+  const head = '<div class="mb-4 flex flex-wrap items-center gap-2">' +
+    btn('nav', '🎮 Start a game', { tone: 'hero', id: 'new', cls: 'text-lg' }) +
+    '<div class="ml-auto flex gap-2 text-sm font-bold text-white/60">' +
+      '<span class="rounded-2xl bg-white/10 px-3 py-2">' + plural(games.length, 'game') + ' played</span>' +
+      '<span class="rounded-2xl bg-white/10 px-3 py-2">⭐ ' + totalStars + ' awarded</span>' +
+    '</div></div>';
+
+  const body = games.length
+    ? podium(list) + card('<div class="space-y-2">' + list.map(boardRow).join('') + '</div>')
+    : emptyState('🎲', 'No games in this stretch yet', 'Pick a wider date range, or start today\u2019s game and put the first stars on the board.',
+        btn('nav', '🎮 Start a game', { tone: 'hero', id: 'new' }));
+
+  return head + filterChips() + body;
+}
+
+/* ========================================================= NEW GAME VIEW */
+function defaultSetup() {
+  return {
+    date: today(), name: '', type: 'quiz', minutes: 10, timer: 'off', qSecs: 15,
+    payout: { ...DEFAULT_PAYOUT, ...(db.settings.defaultPayout || {}) },
+    participants: activeKids().map(k => k.id)
+  };
+}
+const GAME_IDEAS = ['Capital Cities Quiz', 'Maths Sprint', 'Spelling Bee', 'General Knowledge', 'Finish your lunch', 'Tidy the room', 'Homework race'];
+
+function payoutEditor(p) {
+  const rows = [['first', '🥇 1st place'], ['second', '🥈 2nd place'], ['third', '🥉 3rd place'], ['participation', '🙌 Just for playing']];
+  return '<div class="grid grid-cols-2 gap-2 sm:grid-cols-4">' + rows.map(r =>
+    '<label class="rounded-2xl border-2 border-white/10 bg-white/5 p-3 text-center">' +
+      '<span class="block text-sm font-bold text-white/70">' + r[1] + '</span>' +
+      '<input type="number" min="0" max="99" value="' + (p[r[0]] || 0) + '" data-bind="setup.payout.' + r[0] + '" ' +
+      'class="mt-1 w-full bg-transparent text-center text-3xl font-extrabold text-amber-300 outline-none tabnum">' +
+      '<span class="block text-xs font-bold uppercase tracking-wider text-white/40">stars</span>' +
+    '</label>').join('') + '</div>';
+}
+
+function viewNew() {
+  if (activeKids().length < 1) {
+    return emptyState('🧒', 'You need players first', 'Add at least one kid before starting a game.',
+      btn('nav', '➕ Add players', { tone: 'primary', id: 'kids' }));
+  }
+  const s = ui.setup || (ui.setup = defaultSetup());
+  const used = [...new Set(doneGames().map(g => g.name))].slice(-4).reverse();
+  const chips = [...new Set([...used, ...GAME_IDEAS])].slice(0, 7).map(n =>
+    '<button data-act="setup-name" data-id="' + esc(n) + '" class="rounded-full bg-white/10 px-3 py-1.5 text-sm font-bold text-white/80 hover:bg-white/25">' + esc(n) + '</button>').join('');
+
+  const typeCard = (id, ico, title, text) => {
+    const on = s.type === id;
+    return '<button data-act="setup-type" data-id="' + id + '" class="flex-1 rounded-3xl border-2 p-4 text-left transition ' +
+      (on ? 'border-emerald-300 bg-emerald-300/15 shadow-lg' : 'border-white/10 bg-white/5 hover:bg-white/10') + '">' +
+      '<div class="text-3xl">' + ico + '</div><div class="mt-1 text-lg font-extrabold">' + title + '</div>' +
+      '<div class="text-sm text-white/60">' + text + '</div></button>';
+  };
+
+  const people = activeKids().map(k => {
+    const on = s.participants.indexOf(k.id) >= 0;
+    return '<button data-act="setup-who" data-id="' + k.id + '" class="flex items-center gap-2 rounded-2xl border-2 py-2 pl-2 pr-3 transition ' +
+      (on ? 'border-emerald-300 bg-emerald-300/15' : 'border-white/10 bg-white/5 opacity-55 hover:opacity-90') + '">' +
+      avatar(k, 40) + '<span class="font-extrabold">' + esc(k.name) + '</span>' +
+      '<span class="text-lg">' + (on ? '✅' : '➕') + '</span></button>';
+  }).join('');
+
+  const timerCard = (id, ico, title, text) => {
+    const on = (s.timer || 'off') === id;
+    return '<button data-act="setup-timer" data-id="' + id + '" class="flex-1 rounded-2xl border-2 p-3 text-left transition ' +
+      (on ? 'border-amber-300 bg-amber-300/15 shadow-lg' : 'border-white/10 bg-white/5 hover:bg-white/10') + '">' +
+      '<div class="text-2xl">' + ico + '</div><div class="mt-0.5 font-extrabold">' + title + '</div>' +
+      '<div class="text-sm text-white/60">' + text + '</div></button>';
+  };
+
+  const minsChips = [1, 2, 5, 10, 15, 20, 30].map(m =>
+      '<button data-act="setup-mins" data-id="' + m + '" class="rounded-2xl px-3.5 py-2 font-extrabold transition ' +
+      (Number(s.minutes) === m ? 'bg-white text-indigo-950' : 'bg-white/10 hover:bg-white/20') + '">' + m + 'm</button>').join('') +
+    '<label class="flex items-center gap-2 rounded-2xl bg-white/10 px-3 py-2">' +
+      '<input type="number" min="1" max="180" value="' + s.minutes + '" data-bind="setup.minutes" class="w-16 bg-transparent text-center text-xl font-extrabold outline-none tabnum">' +
+      '<span class="text-sm font-bold text-white/60">minutes</span></label>';
+
+  const secsChips = [5, 10, 15, 20, 30, 45, 60].map(x =>
+      '<button data-act="setup-secs" data-id="' + x + '" class="rounded-2xl px-3.5 py-2 font-extrabold transition ' +
+      (Number(s.qSecs) === x ? 'bg-white text-indigo-950' : 'bg-white/10 hover:bg-white/20') + '">' + x + 's</button>').join('') +
+    '<label class="flex items-center gap-2 rounded-2xl bg-white/10 px-3 py-2">' +
+      '<input type="number" min="3" max="300" value="' + s.qSecs + '" data-bind="setup.qSecs" class="w-16 bg-transparent text-center text-xl font-extrabold outline-none tabnum">' +
+      '<span class="text-sm font-bold text-white/60">seconds</span></label>';
+
+  const timing = s.type === 'race'
+    ? '<div class="mt-4">' + fieldLabel('Countdown') +
+      '<div class="flex flex-wrap items-center gap-2">' + minsChips + '</div>' +
+      '<p class="mt-2 text-sm text-white/50">Anyone still going when the timer hits zero gets no placement stars.</p></div>'
+    : '<div class="mt-4">' + fieldLabel('Add a clock? Makes it tense') +
+      '<div class="flex flex-col gap-2 sm:flex-row">' +
+        timerCard('off', '🚫', 'No timer', 'Play at your own pace.') +
+        timerCard('game', '⏳', 'Whole round', 'One countdown for the lot. Points stop at zero.') +
+        timerCard('question', '⚡', 'Per question', 'A short clock on every question.') +
+      '</div>' +
+      (s.timer === 'game'
+        ? '<div class="mt-3">' + fieldLabel('How long is the round?') +
+          '<div class="flex flex-wrap items-center gap-2">' + minsChips + '</div>' +
+          '<p class="mt-2 text-sm text-white/50">Score as many as you can before the buzzer. No points after zero.</p></div>'
+        : s.timer === 'question'
+        ? '<div class="mt-3">' + fieldLabel('Seconds per question') +
+          '<div class="flex flex-wrap items-center gap-2">' + secsChips + '</div>' +
+          '<p class="mt-2 text-sm text-white/50">Start the clock, read the question — the first correct answer stops it. ' +
+            'Nobody in time and the buzzer goes.</p></div>'
+        : '') + '</div>';
+
+  return card(
+    '<div class="grid gap-4 sm:grid-cols-2">' +
+      '<div>' + fieldLabel('Game name') +
+        '<input value="' + esc(s.name) + '" data-bind="setup.name" placeholder="What are you playing?" class="' + INPUT_CLS + '">' +
+        '<div class="mt-2 flex flex-wrap gap-1.5">' + chips + '</div></div>' +
+      '<div>' + fieldLabel('Date') +
+        '<input type="date" value="' + s.date + '" data-bind="setup.date" class="' + INPUT_CLS + '">' +
+        '<p class="mt-2 text-sm text-white/50">Defaults to today. Change it to log a game you played earlier.</p></div>' +
+    '</div>' +
+    '<div class="mt-4">' + fieldLabel('Game type') + '<div class="flex flex-col gap-2 sm:flex-row">' +
+      typeCard('quiz', '🔔', 'Buzzer quiz', 'Tap a kid each time they answer first. Most correct wins.') +
+      typeCard('race', '⏱️', 'Timed race', 'Countdown timer. Tap each kid as they finish the task.') +
+    '</div></div>' +
+    timing +
+    '<div class="mt-4">' + fieldLabel('Stars for this game') + payoutEditor(s.payout) + '</div>' +
+    '<div class="mt-4">' + fieldLabel('Who is playing? (' + s.participants.length + ')') +
+      '<div class="flex flex-wrap gap-2">' + people + '</div></div>' +
+    '<div class="mt-6 flex flex-wrap gap-2">' +
+      btn('start-game', '▶ Start game', { tone: 'primary', cls: 'text-xl px-8 py-4' }) +
+      btn('nav', 'Cancel', { id: 'board' }) +
+    '</div>'
+  );
+}
+
+/* ========================================================== LIVE — SHARED */
+function gridCols(n) {
+  if (n <= 1) return 'grid-cols-1';
+  if (n === 2) return 'grid-cols-1 sm:grid-cols-2';
+  if (n === 4) return 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-4';
+  return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+}
+function liveHeader(g, right) {
+  return '<div class="mb-4 flex flex-wrap items-center gap-3 rounded-3xl border border-white/10 bg-white/[0.07] px-4 py-3 shadow-xl backdrop-blur">' +
+    /* On a phone the name block takes the whole row so the title keeps its space
+       and the buttons wrap underneath, rather than the title being squeezed to
+       an ellipsis while the star breakdown stacks one item per line. */
+    '<span class="flex w-full min-w-0 items-center gap-3 sm:w-auto sm:flex-1">' +
+    '<span class="text-3xl">' + (g.type === 'quiz' ? '🔔' : '⏱️') + '</span>' +
+    '<span class="min-w-0 flex-1"><span class="block truncate text-xl font-extrabold leading-tight sm:text-2xl">' + esc(g.name) + '</span>' +
+    '<span class="block truncate text-sm text-white/50">' + fmtDay(g.date) +
+      /* the star breakdown is reference only — it also sits on the setup and
+         results screens — so it steps aside on a phone to keep this to one line */
+      '<span class="hidden sm:inline"> · 🥇 ' + g.payout.first + ' · 🥈 ' + g.payout.second +
+        ' · 🥉 ' + g.payout.third +
+        (g.payout.participation ? ' · 🙌 ' + g.payout.participation : '') + ' stars</span>' +
+      (perQuestion(g) ? ' · ⚡ ' + g.countdownSec + 's a question'
+        : g.type === 'quiz' && hasClock(g) ? ' · ⏳ ' + Math.round(g.countdownSec / 60) + 'm round' : '') +
+      '</span></span></span>' +
+    '<span class="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">' + right + '</span></div>';
+}
+function viewLive() {
+  const g = liveGame();
+  if (!g) return emptyState('🎮', 'No game is running', 'Start a new game to begin scoring.', btn('nav', '🎮 New game', { tone: 'hero', id: 'new' }));
+  return g.type === 'quiz' ? viewQuiz(g) : viewRace(g);
+}
+
+/* ============================================================ LIVE — QUIZ */
+function viewQuiz(g) {
+  const rows = g.results || [];
+  const best = Math.max(0, ...rows.map(r => r.correct || 0));
+  const total = rows.reduce((a, r) => a + (r.correct || 0), 0);
+  const timed = hasClock(g), perQ = perQuestion(g);
+  const over = timed && raceOver(g);
+  const frozen = over && !perQ;          // the round's clock ran out — no more points
+
+  const clock = !timed ? '' : clockCard(g,
+    perQ
+      ? (over
+          ? btn('next-q', '➡ Next question', { tone: 'hero', cls: 'text-lg' })
+          : (g.raceStart
+              ? btn('race-pause', '⏸ Pause', {})
+              : btn('race-start', (g.raceAccum ? '▶ Resume' : '▶ Start question ' + (g.qNo || 1)), { tone: 'hero', cls: 'text-lg' })))
+      : (over
+          ? btn('finish-quiz', '🏁 See results', { tone: 'primary', cls: 'text-lg' })
+          : (g.raceStart
+              ? btn('race-pause', '⏸ Pause', {})
+              : btn('race-start', (g.raceAccum ? '▶ Resume' : '▶ Start the clock'), { tone: 'hero', cls: 'text-lg' }))));
+
+  const cards = rows.map(r => {
+    const k = kidOf(r.kidId), n = r.correct || 0, lead = n > 0 && n === best;
+    return '<div data-act="plus" data-id="' + r.kidId + '" role="button" tabindex="0" ' +
+      'class="noselect relative flex cursor-pointer flex-col justify-center rounded-3xl border-4 p-4 text-center shadow-xl transition active:scale-[0.97] ' +
+      (timed ? 'lg:min-h-[30vh] ' : 'lg:min-h-[52vh] ') + (frozen ? 'opacity-60 ' : '') +
+      (lead ? 'bg-white/[0.14]' : 'bg-white/[0.06] hover:bg-white/[0.1]') + '" ' +
+      'style="border-color:' + (lead ? k.color : 'rgba(255,255,255,.12)') + ';' + (lead ? 'box-shadow:0 0 34px ' + k.color + '55;' : '') + '">' +
+      (lead ? '<div class="absolute -top-4 left-1/2 -translate-x-1/2 text-3xl animate-floaty">👑</div>' : '') +
+      '<button data-act="minus" data-id="' + r.kidId + '" title="Take one away" ' +
+        'class="absolute right-2 top-2 h-10 w-10 rounded-full bg-white/10 text-xl font-extrabold text-white/60 transition hover:bg-rose-500/80 hover:text-white">−</button>' +
+      '<div class="flex justify-center pt-2">' + avatar(k, 96, { glow: lead }) + '</div>' +
+      '<div class="mt-2 truncate text-xl font-extrabold">' + esc(k.name) + '</div>' +
+      '<div class="my-1 text-6xl font-extrabold tabnum sm:text-7xl lg:text-8xl" style="color:' + k.color + '">' + n + '</div>' +
+      '<div class="text-sm font-bold uppercase tracking-wider text-white/40">correct</div>' +
+      '<div class="mt-3 rounded-2xl bg-white/10 py-2.5 text-lg font-extrabold text-white/80">+1 tap</div>' +
+    '</div>';
+  }).join('');
+
+  const right =
+    btn('undo', '↩ Undo', { cls: ui.undo.length ? '' : 'pointer-events-none opacity-40' }) +
+    btn('abort-game', '✖ Abort', { tone: 'danger', cls: 'text-sm' }) +
+    btn('finish-quiz', '🏁 Finish game', { tone: 'primary' });
+
+  const hint = frozen ? 'Time is up — tap 🏁 to award the stars.'
+    : perQ && over ? 'Nobody buzzed in time. Start the next question when you are ready.'
+    : perQ && g.raceStart ? 'First correct answer — tap their card and the clock stops.'
+    : perQ ? 'Press Start, then read the question out. Space bar works too.'
+    : 'Tap a card when that player answers first. ' + plural(total, 'answer') + ' scored so far.';
+
+  return liveHeader(g, right) + clock +
+    '<div class="grid gap-4 ' + gridCols(rows.length) + '">' + cards + '</div>' +
+    '<p class="mt-4 text-center text-sm text-white/40">' + hint +
+      (perQ && (g.passed || 0) ? ' · ' + plural(g.passed, 'question') + ' went unanswered' : '') + '</p>';
+}
+
+/* ============================================================ LIVE — RACE */
+/* One clock serves both game types: the race countdown and the quiz's optional
+   round / per-question timer. Times are wall-clock so a backgrounded tab, a
+   pause, or a refresh mid-game never drifts. */
+const raceElapsed = g => ((g.raceAccum || 0) + (g.raceStart ? Date.now() - g.raceStart : 0)) / 1000;
+const raceRemain  = g => (g.countdownSec || 0) - raceElapsed(g);
+const raceOver    = g => raceRemain(g) <= 0;
+const perQuestion = g => !!g && g.type === 'quiz' && g.quizTimer === 'question';
+const hasClock    = g => !!g && (g.type === 'race' || (g.type === 'quiz' && !!g.quizTimer && g.quizTimer !== 'off'));
+const clockColor  = (rem, perQ) => rem <= (perQ ? 3 : 10) ? '#fb7185' : rem <= (perQ ? 5 : 30) ? '#fbbf24' : '#ffffff';
+const clockText   = (rem, perQ) => perQ ? String(Math.max(0, Math.ceil(rem))) : fmtClock(Math.max(0, rem));
+
+let raceTicker = null, lastTickSec = null;
+function syncRaceTimer() {
+  const g = liveGame();
+  const needs = ui.screen === 'live' && g && hasClock(g) && g.raceStart;
+  if (needs && !raceTicker) raceTicker = setInterval(raceTick, 200);
+  if (!needs && raceTicker) { clearInterval(raceTicker); raceTicker = null; lastTickSec = null; }
+}
+function raceTick() {
+  const g = liveGame();
+  const el = document.getElementById('raceClock');
+  if (!g || !hasClock(g) || !el) { syncRaceTimer(); return; }
+  const rem = raceRemain(g), perQ = perQuestion(g);
+  el.textContent = clockText(rem, perQ);
+  el.style.color = clockColor(rem, perQ);
+  const whole = Math.ceil(rem);
+  if (whole !== lastTickSec) {
+    lastTickSec = whole;
+    if (whole > 0 && whole <= (perQ ? 3 : 5)) tick();
+  }
+  if (rem <= 0) {
+    g.raceStart = null;
+    g.raceAccum = (g.countdownSec || 0) * 1000;
+    if (g.type === 'race') (g.results || []).forEach(r => { if (r.finishSec == null) r.dnf = true; });
+    if (perQ) g.passed = (g.passed || 0) + 1;
+    save(); buzzer(); render();
+  }
+}
+
+function clockCard(g, buttons) {
+  const perQ = perQuestion(g), rem = raceRemain(g), over = rem <= 0, running = !!g.raceStart;
+  const label = over
+    ? (perQ ? 'Buzz! Nobody got it' : 'Time is up')
+    : running
+      ? (perQ ? 'Question ' + (g.qNo || 1) : 'Time remaining')
+      : (perQ ? 'Question ' + (g.qNo || 1) + ' — ready' : (g.raceAccum ? 'Paused' : 'Ready'));
+  return card(
+    '<div class="text-center">' +
+      '<div class="text-xs font-extrabold uppercase tracking-[0.2em] text-white/40">' + label + '</div>' +
+      '<div id="raceClock" class="my-1 font-extrabold leading-none tabnum ' +
+        (perQ ? 'text-8xl sm:text-9xl' : 'text-7xl sm:text-8xl') + (over ? ' animate-shake' : '') + '" ' +
+        'style="color:' + clockColor(Math.max(0, rem), perQ) + '">' + clockText(rem, perQ) + '</div>' +
+      '<div class="mt-3 flex flex-wrap justify-center gap-2">' + buttons + '</div>' +
+    '</div>', 'mb-4' + (over ? ' border-rose-400/50' : ''));
+}
+
+function viewRace(g) {
+  const rows = g.results || [];
+  const rem = raceRemain(g);
+  const over = rem <= 0;
+  const running = !!g.raceStart;
+  const nextPlace = rows.filter(r => r.finishSec != null).length + 1;
+
+  const clock = clockCard(g,
+    over ? btn('finish-race', '🏁 See results', { tone: 'primary', cls: 'text-lg' })
+         : (running ? btn('race-pause', '⏸ Pause', {}) : btn('race-start', (g.raceAccum ? '▶ Resume' : '▶ Start timer'), { tone: 'hero', cls: 'text-lg' })) +
+           btn('finish-race', '🏁 Finish now', { tone: 'primary' }));
+
+  const cards = rows.map(r => {
+    const k = kidOf(r.kidId), done = r.finishSec != null;
+    const place = done ? rows.filter(x => x.finishSec != null && x.finishSec < r.finishSec).length + 1 : null;
+    const body = done
+      ? '<div class="text-4xl">' + (MEDALS[place] || place + 'th') + '</div>' +
+        '<div class="text-3xl font-extrabold tabnum" style="color:' + k.color + '">' + fmtSecs(r.finishSec) + '</div>' +
+        '<button data-act="unfinish" data-id="' + r.kidId + '" class="mt-2 rounded-2xl bg-white/10 px-3 py-2 text-sm font-bold text-white/60 hover:bg-white/20">↩ still going</button>'
+      : (r.dnf
+        ? '<div class="text-3xl">😴</div><div class="text-xl font-extrabold text-white/50">Ran out of time</div>'
+        : '<div class="mt-1 text-sm font-bold uppercase tracking-wider text-white/40">racing…</div>' +
+          '<button data-act="done" data-id="' + r.kidId + '" class="mt-2 w-full rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-500 py-4 text-2xl font-extrabold text-emerald-950 shadow-lg transition active:scale-95 hover:brightness-110">Done!</button>');
+    return '<div class="flex flex-col justify-center rounded-3xl border-4 p-4 text-center shadow-xl lg:min-h-[34vh] ' + (done ? 'bg-white/[0.14]' : 'bg-white/[0.06]') + '" ' +
+      'style="border-color:' + (done ? k.color : 'rgba(255,255,255,.12)') + ';' + (done ? 'box-shadow:0 0 30px ' + k.color + '44;' : '') + '">' +
+      '<div class="flex justify-center">' + avatar(k, 88, { glow: done }) + '</div>' +
+      '<div class="mt-2 truncate text-xl font-extrabold">' + esc(k.name) + '</div>' + body + '</div>';
+  }).join('');
+
+  const hint = over ? 'Timer finished — anyone who did not tap Done gets no placement stars.'
+    : running ? 'Next to finish takes place ' + nextPlace + '.'
+    : 'Press Start when they begin.';
+
+  return liveHeader(g, btn('abort-game', '✖ Abort', { tone: 'danger', cls: 'text-sm' })) + clock +
+    '<div class="grid gap-4 ' + gridCols(rows.length) + '">' + cards + '</div>' +
+    '<p class="mt-4 text-center text-sm text-white/40">' + hint + '</p>';
+}
+
+/* ========================================================= RESULTS CONFIRM */
+function viewResults() {
+  const r = ui.results, g = r && db.games.find(x => x.id === r.gameId);
+  if (!g) return emptyState('🤔', 'Nothing to confirm', 'That game is no longer open.', btn('nav', 'Back to board', { tone: 'primary', id: 'board' }));
+
+  const order = r.rows.map((row, i) => ({ row, i }))
+    .sort((a, b) => (a.row.place || 99) - (b.row.place || 99) || (b.row.correct || 0) - (a.row.correct || 0));
+
+  const lines = order.map(o => {
+    const k = kidOf(o.row.kidId), pl = o.row.place;
+    const detail = g.type === 'quiz'
+      ? plural(o.row.correct || 0, 'correct answer')
+      : (o.row.dnf ? 'Did not finish in time' : 'Finished in ' + fmtSecs(o.row.finishSec));
+    return '<div class="flex items-center gap-3 rounded-2xl border-2 p-3 ' + (pl === 1 ? 'border-amber-300/60 bg-amber-300/10' : 'border-white/10 bg-white/5') + '">' +
+      '<span class="w-9 shrink-0 text-center text-2xl">' + (MEDALS[pl] || (pl ? pl + 'th' : '·')) + '</span>' +
+      avatar(k, 52) +
+      '<span class="min-w-0 flex-1"><span class="block truncate text-lg font-extrabold">' + esc(k.name) + '</span>' +
+        '<span class="block text-sm text-white/50">' + detail + '</span></span>' +
+      '<label class="flex shrink-0 items-center gap-1 rounded-2xl bg-amber-400/15 px-3 py-2">' +
+        '<input type="number" min="0" max="99" value="' + (o.row.stars || 0) + '" data-bind="results.rows.' + o.i + '.stars" ' +
+          'class="w-14 bg-transparent text-center text-2xl font-extrabold text-amber-300 outline-none tabnum">' +
+        '<span class="text-xl">⭐</span></label>' +
+    '</div>';
+  }).join('');
+
+  const champs = r.rows.filter(x => x.place === 1).map(x => esc(kidOf(x.kidId).name)).join(' & ');
+
+  return card(
+    '<div class="mb-3 text-center"><div class="text-4xl">🏁</div>' +
+      '<div class="text-2xl font-extrabold">' + esc(g.name) + '</div>' +
+      '<div class="text-white/50">' + fmtLongDay(g.date) + '</div>' +
+      (champs ? '<div class="mt-2 text-lg font-extrabold text-amber-300">Winner: ' + champs + '</div>'
+              : '<div class="mt-2 text-lg font-extrabold text-white/60">No winner this round</div>') + '</div>' +
+    '<div class="space-y-2">' + lines + '</div>' +
+    '<p class="mt-3 text-center text-sm text-white/40">Stars are worked out from the places — nudge any number if you want to.</p>' +
+    '<div class="mt-5 flex flex-wrap justify-center gap-2">' +
+      btn('results-save', '⭐ Award the stars', { tone: 'primary', cls: 'text-xl px-8 py-4' }) +
+      btn('results-back', '← Back to the game', {}) +
+      btn('abort-game', '✖ Abort — no stars', { tone: 'danger' }) +
+    '</div>'
+  );
+}
+
+/* ============================================================ CELEBRATION */
+function celebrateOverlay() {
+  const g = db.games.find(x => x.id === ui.celebrate);
+  if (!g) return '';
+  const champs = winnersOf(g);
+  const rows = (g.results || []).slice().sort((a, b) => (a.place || 99) - (b.place || 99));
+
+  const heroes = champs.length
+    ? '<div class="flex flex-wrap items-end justify-center gap-4">' + champs.map(k =>
+        '<div class="animate-zoomin text-center">' + avatar(k, 140, { glow: true }) +
+        '<div class="mt-2 text-2xl font-extrabold">' + esc(k.name) + '</div></div>').join('') + '</div>'
+    : '<div class="text-6xl">🤝</div>';
+
+  const list = rows.map(r => {
+    const k = kidOf(r.kidId);
+    return '<div class="flex items-center gap-2 rounded-2xl bg-white/10 px-3 py-2">' + avatar(k, 36) +
+      '<span class="flex-1 truncate font-extrabold">' + esc(k.name) + '</span>' +
+      '<span class="text-lg font-extrabold text-amber-300 tabnum">+' + (r.stars || 0) + ' ⭐</span></div>';
+  }).join('');
+
+  return '<div class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">' +
+    '<div class="w-full max-w-lg animate-zoomin rounded-[2rem] border-2 border-amber-300/40 bg-gradient-to-b from-indigo-900 to-slate-900 p-6 text-center shadow-2xl">' +
+      '<div class="animate-floaty text-5xl">🎉</div>' +
+      '<div class="mb-1 text-3xl font-extrabold text-amber-300">' + (champs.length > 1 ? 'It is a tie!' : champs.length ? 'Winner!' : 'Game over') + '</div>' +
+      '<div class="mb-4 text-white/60">' + esc(g.name) + ' · ' + fmtDay(g.date) + '</div>' +
+      heroes +
+      '<div class="mt-5 space-y-1.5 text-left">' + list + '</div>' +
+      '<div class="mt-5 flex flex-wrap justify-center gap-2">' +
+        btn('celebrate-close', '🏆 See the board', { tone: 'hero', cls: 'text-lg' }) +
+        btn('nav', '🎮 Another game', { id: 'new' }) +
+      '</div>' +
+    '</div></div>';
+}
+
+/* ========================================================== HISTORY VIEW */
+function gameEditor(g) {
+  const e = ui.edit;
+  const stars = (g.results || []).map(r => {
+    const k = kidOf(r.kidId);
+    return '<label class="flex items-center gap-2 rounded-2xl bg-white/10 px-3 py-2">' + avatar(k, 34) +
+      '<span class="min-w-0 flex-1 truncate text-sm font-extrabold">' + esc(k.name) + '</span>' +
+      '<input type="number" min="0" max="99" value="' + (e.stars[r.kidId] || 0) + '" data-bind="edit.stars.' + r.kidId + '" ' +
+        'class="w-14 bg-transparent text-center text-xl font-extrabold text-amber-300 outline-none tabnum">⭐</label>';
+  }).join('');
+  return '<div class="mt-3 space-y-3 border-t border-white/10 pt-3">' +
+    '<div class="grid gap-2 sm:grid-cols-2">' +
+      '<div>' + fieldLabel('Game name') + '<input value="' + esc(e.name) + '" data-bind="edit.name" class="' + INPUT_CLS + '"></div>' +
+      '<div>' + fieldLabel('Date') + '<input type="date" value="' + e.date + '" data-bind="edit.date" class="' + INPUT_CLS + '"></div>' +
+    '</div>' +
+    '<div>' + fieldLabel('Stars') + '<div class="grid gap-2 sm:grid-cols-2">' + stars + '</div></div>' +
+    '<div class="flex flex-wrap gap-2">' +
+      btn('game-save', '💾 Save changes', { tone: 'primary', id: g.id }) +
+      btn('game-collapse', 'Cancel', {}) +
+      btn('game-delete', '🗑 Delete game', { tone: 'danger', id: g.id, cls: 'ml-auto' }) +
+    '</div></div>';
+}
+
+function viewHistory() {
+  const games = doneGames().slice().sort((a, b) => (b.date < a.date ? -1 : b.date > a.date ? 1 : (b.finishedAt || 0) - (a.finishedAt || 0)));
+  if (!games.length) {
+    return emptyState('📅', 'No games recorded yet', 'Every game you finish gets filed here under the day you played it.',
+      btn('nav', '🎮 Start a game', { tone: 'hero', id: 'new' }));
+  }
+  const byDate = new Map();
+  games.forEach(g => { if (!byDate.has(g.date)) byDate.set(g.date, []); byDate.get(g.date).push(g); });
+
+  return [...byDate.entries()].map(([date, list]) => {
+    const dayStars = list.reduce((a, g) => a + (g.results || []).reduce((x, r) => x + (r.stars || 0), 0), 0);
+    const cards = list.map(g => {
+      const champs = winnersOf(g);
+      const open = ui.expand === g.id;
+      const chips = (g.results || []).slice().sort((a, b) => (a.place || 99) - (b.place || 99)).map(r => {
+        const k = kidOf(r.kidId);
+        return '<span class="flex items-center gap-1.5 rounded-full bg-white/10 py-1 pl-1 pr-2.5">' + avatar(k, 26) +
+          '<span class="text-sm font-extrabold">' + (MEDALS[r.place] || '') + ' ' + (r.stars || 0) + '⭐</span></span>';
+      }).join('');
+      return '<div class="rounded-3xl border border-white/10 bg-white/[0.06] p-3">' +
+        '<button data-act="game-expand" data-id="' + g.id + '" class="flex w-full items-center gap-3 text-left">' +
+          '<span class="text-2xl">' + (g.type === 'quiz' ? '🔔' : '⏱️') + '</span>' +
+          '<span class="min-w-0 flex-1"><span class="block truncate text-lg font-extrabold leading-tight">' + esc(g.name) + '</span>' +
+            '<span class="block truncate text-sm text-white/50">' + (champs.length ? '🏆 ' + champs.map(k => esc(k.name)).join(' & ') : 'No winner') + '</span></span>' +
+          '<span class="text-white/40">' + (open ? '▲' : '▼') + '</span></button>' +
+        '<div class="mt-2 flex flex-wrap gap-1.5">' + chips + '</div>' +
+        (open ? gameEditor(g) : '') + '</div>';
+    }).join('');
+    return '<div class="mb-5">' +
+      '<div class="mb-2 flex items-center gap-2"><h2 class="text-lg font-extrabold">' + fmtDay(date) + '</h2>' +
+        '<span class="text-sm text-white/40">' + fmtLongDay(date) + '</span>' +
+        '<span class="ml-auto">' + starPill(dayStars) + '</span></div>' +
+      '<div class="space-y-2">' + cards + '</div></div>';
+  }).join('');
+}
+
+function starPill(n) {
+  return '<span class="inline-flex items-center gap-1 rounded-full bg-amber-400/20 px-2.5 py-1 text-sm font-extrabold text-amber-200">⭐ ' + n + '</span>';
+}
+
+/* ============================================================= KIDS VIEW */
+function kidEditor() {
+  const e = ui.kidEdit;
+  const preview = { name: e.name || 'New player', emoji: e.emoji, color: e.color, photo: e.photo };
+
+  const emojiGrid = EMOJIS.map(em =>
+    '<button data-act="kid-emoji" data-id="' + em + '" class="rounded-xl p-1.5 text-2xl transition hover:bg-white/20 ' +
+    (e.emoji === em && !e.photo ? 'bg-white/25 ring-2 ring-emerald-300' : '') + '">' + em + '</button>').join('');
+
+  const colorRow = COLORS.map(c =>
+    '<button data-act="kid-color" data-id="' + encodeURIComponent(c) + '" class="h-9 w-9 rounded-full border-2 transition ' +
+    (e.color === c ? 'scale-110 border-white' : 'border-white/20 hover:scale-105') + '" style="background:' + c + '"></button>').join('');
+
+  return card(
+    '<div class="flex flex-col gap-4 sm:flex-row">' +
+      '<div class="flex flex-col items-center gap-2">' +
+        avatar(preview, 128, { glow: true }) +
+        '<div class="flex flex-wrap justify-center gap-1.5">' +
+          '<button data-act="kid-photo" class="rounded-2xl bg-white/15 px-3 py-2 text-sm font-extrabold hover:bg-white/25">📷 ' + (e.photo ? 'Change photo' : 'Add photo') + '</button>' +
+          (e.photo ? '<button data-act="kid-photo-clear" class="rounded-2xl bg-white/10 px-3 py-2 text-sm font-bold text-white/60 hover:bg-rose-500/70 hover:text-white">Remove</button>' : '') +
+        '</div>' +
+        (e.photo ? '' : '<p class="max-w-[9rem] text-center text-xs text-white/40">A real photo helps the little ones spot themselves.</p>') +
+      '</div>' +
+      '<div class="min-w-0 flex-1">' +
+        fieldLabel('Name') +
+        '<input value="' + esc(e.name) + '" data-bind="kidEdit.name" placeholder="Kid\u2019s name" class="' + INPUT_CLS + '">' +
+        '<div class="mt-3">' + fieldLabel('Colour') + '<div class="flex flex-wrap gap-2">' + colorRow + '</div></div>' +
+        '<div class="mt-3">' + fieldLabel(e.photo ? 'Backup animal (used if the photo is removed)' : 'Or pick an animal') +
+          '<div class="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-2xl bg-black/20 p-2">' + emojiGrid + '</div></div>' +
+        '<div class="mt-4 flex flex-wrap gap-2">' +
+          btn('kid-save', '💾 Save player', { tone: 'primary' }) +
+          btn('kid-cancel', 'Cancel', {}) +
+        '</div>' +
+      '</div>' +
+    '</div>', 'mb-4 border-emerald-300/40');
+}
+
+function viewKids() {
+  const all = standings(doneGames());
+  const statOf = id => all.find(t => t.kid.id === id) || { stars: 0, played: 0, g: 0 };
+
+  const listOf = (kids, archived) => kids.map(k => {
+    const t = statOf(k.id);
+    return '<div class="flex items-center gap-3 rounded-2xl border-2 border-white/10 bg-white/5 p-3 ' + (archived ? 'opacity-60' : '') + '">' +
+      avatar(k, 56) +
+      '<div class="min-w-0 flex-1"><div class="truncate text-lg font-extrabold">' + esc(k.name) + '</div>' +
+        '<div class="text-sm text-white/50">⭐ ' + t.stars + ' · 🥇 ' + t.g + ' · ' + plural(t.played, 'game') + '</div></div>' +
+      (archived
+        ? '<button data-act="kid-restore" data-id="' + k.id + '" class="rounded-2xl bg-white/10 px-3 py-2 text-sm font-extrabold hover:bg-white/20">↩ Bring back</button>'
+        : '<button data-act="kid-edit" data-id="' + k.id + '" class="rounded-2xl bg-white/10 px-3 py-2 text-sm font-extrabold hover:bg-white/20">✏️ Edit</button>' +
+          '<button data-act="kid-archive" data-id="' + k.id + '" title="Hide from games, keep their history" class="rounded-2xl bg-white/10 px-3 py-2 text-sm font-bold text-white/50 hover:bg-rose-500/70 hover:text-white">👋</button>') +
+    '</div>';
+  }).join('');
+
+  const active = activeKids();
+  const gone = db.kids.filter(k => k.active === false);
+
+  return (ui.kidEdit ? kidEditor() : '<div class="mb-4">' + btn('kid-new', '➕ Add a player', { tone: 'primary', cls: 'text-lg' }) + '</div>') +
+    (active.length ? card('<div class="space-y-2">' + listOf(active, false) + '</div>')
+                   : (ui.kidEdit ? '' : emptyState('🧒', 'No players yet', 'Add each kid with a photo or an animal and their own colour.',
+                        btn('kid-new', '➕ Add a player', { tone: 'primary' })))) +
+    (gone.length ? '<div class="mt-4">' + fieldLabel('Not playing at the moment') + card('<div class="space-y-2">' + listOf(gone, true) + '</div>') + '</div>' : '');
+}
+
+/* =============================================================== MODALS */
+function modalShell(inner, closeAct, wide) {
+  return '<div class="fixed inset-0 z-[62] flex items-end justify-center bg-slate-950/70 p-3 backdrop-blur-sm sm:items-center" data-act="' + closeAct + '" data-backdrop="1">' +
+    '<div class="w-full ' + (wide ? 'max-w-2xl' : 'max-w-md') + ' animate-slideup rounded-[2rem] border border-white/15 bg-gradient-to-b from-indigo-900 to-slate-900 p-5 shadow-2xl" data-stop="1">' +
+    inner + '</div></div>';
+}
+
+function profileModal() {
+  const k = db.kids.find(x => x.id === ui.profile);
+  if (!k) return '';
+  const t = standings(doneGames()).find(x => x.kid.id === k.id) || { stars: 0, played: 0, g: 0, s: 0, b: 0, rank: '–' };
+  const mine = doneGames()
+    .filter(g => (g.results || []).some(r => r.kidId === k.id))
+    .sort((a, b) => (b.date < a.date ? -1 : b.date > a.date ? 1 : 0))
+    .slice(0, 10);
+
+  const stat = (v, l) => '<div class="rounded-2xl bg-white/10 px-3 py-2 text-center"><div class="text-2xl font-extrabold tabnum">' + v + '</div>' +
+    '<div class="text-[11px] font-bold uppercase tracking-wider text-white/50">' + l + '</div></div>';
+
+  const rows = mine.length ? mine.map(g => {
+    const r = (g.results || []).find(x => x.kidId === k.id) || {};
+    return '<div class="flex items-center gap-2 rounded-2xl bg-white/5 px-3 py-2">' +
+      '<span class="text-lg">' + (MEDALS[r.place] || '·') + '</span>' +
+      '<span class="min-w-0 flex-1"><span class="block truncate font-bold">' + esc(g.name) + '</span>' +
+        '<span class="block text-xs text-white/40">' + fmtDay(g.date) + '</span></span>' +
+      '<span class="font-extrabold text-amber-300">+' + (r.stars || 0) + '⭐</span></div>';
+  }).join('') : '<p class="text-center text-white/50">No games yet — that changes tonight.</p>';
+
+  return modalShell(
+    '<div class="text-center">' + avatar(k, 110, { glow: true }) +
+      '<div class="mt-2 text-2xl font-extrabold">' + esc(k.name) + '</div>' +
+      '<div class="text-white/50">Rank ' + (t.stars > 0 ? '#' + t.rank : 'unranked') + ' all time</div></div>' +
+    '<div class="mt-4 grid grid-cols-3 gap-2">' + stat('⭐ ' + t.stars, 'stars') + stat('🥇 ' + t.g, 'wins') + stat(t.played, 'games') + '</div>' +
+    '<div class="mt-3 grid grid-cols-2 gap-2">' + stat('🥈 ' + t.s, '2nd places') + stat('🥉 ' + t.b, '3rd places') + '</div>' +
+    '<div class="mt-4">' + fieldLabel('Recent games') + '<div class="max-h-64 space-y-1.5 overflow-y-auto">' + rows + '</div></div>' +
+    '<div class="mt-4 flex justify-center gap-2">' + btn('modal-close', 'Close', { tone: 'ghost' }) + '</div>', 'modal-close');
+}
+
+function settingsModal() {
+  const s = db.settings;
+  const rows = [['first', '🥇 1st'], ['second', '🥈 2nd'], ['third', '🥉 3rd'], ['participation', '🙌 Playing']];
+  return modalShell(
+    '<div class="mb-3 text-center text-2xl font-extrabold">⚙️ Settings</div>' +
+    fieldLabel('Board title') +
+    '<input value="' + esc(s.boardTitle || '') + '" data-bind="settings.boardTitle" class="' + INPUT_CLS + '">' +
+    '<div class="mt-4">' + fieldLabel('Default stars for a new game') +
+      '<div class="grid grid-cols-4 gap-2">' + rows.map(r =>
+        '<label class="rounded-2xl bg-white/10 p-2 text-center"><span class="block text-xs font-bold text-white/60">' + r[1] + '</span>' +
+        '<input type="number" min="0" max="99" value="' + (s.defaultPayout[r[0]] || 0) + '" data-bind="settings.defaultPayout.' + r[0] + '" ' +
+        'class="w-full bg-transparent text-center text-2xl font-extrabold text-amber-300 outline-none tabnum"></label>').join('') + '</div></div>' +
+    '<button data-act="sound-toggle" class="mt-4 flex w-full items-center gap-3 rounded-2xl bg-white/10 px-4 py-3 text-left font-extrabold hover:bg-white/20">' +
+      '<span class="text-2xl">' + (s.soundOn ? '🔊' : '🔇') + '</span><span class="flex-1">Sounds ' + (s.soundOn ? 'on' : 'off') + '</span>' +
+      '<span class="' + (s.soundOn ? 'bg-emerald-400' : 'bg-white/20') + ' relative h-7 w-12 rounded-full transition">' +
+        '<span class="absolute top-1 h-5 w-5 rounded-full bg-white transition-all ' + (s.soundOn ? 'left-6' : 'left-1') + '"></span></span></button>' +
+    '<p class="mt-4 rounded-2xl bg-white/5 p-3 text-sm text-white/50">Everything is saved inside this browser only. Clearing your browsing data, or opening this file on another computer, starts an empty board.</p>' +
+    '<div class="mt-4 flex flex-wrap justify-between gap-2">' +
+      btn('settings-save', '💾 Done', { tone: 'primary' }) +
+      btn('wipe', '🗑 Erase everything', { tone: 'danger' }) +
+    '</div>', 'settings-save');
+}
+
+function modals() {
+  if (ui.celebrate) return celebrateOverlay();
+  if (ui.profile) return profileModal();
+  if (ui.settingsOpen) return settingsModal();
+  return '';
+}
+
+/* ============================================================== BINDINGS */
+const bindRoots = () => ({ setup: ui.setup, results: ui.results, edit: ui.edit, kidEdit: ui.kidEdit, settings: db.settings });
+function setPath(path, value) {
+  const parts = path.split('.');
+  let obj = bindRoots()[parts[0]];
+  if (!obj) return;
+  for (let i = 1; i < parts.length - 1; i++) { obj = obj[parts[i]]; if (!obj) return; }
+  obj[parts[parts.length - 1]] = value;
+}
+document.addEventListener('input', e => {
+  const el = e.target.closest('[data-bind]');
+  if (!el) return;
+  const v = el.type === 'number' ? (el.value === '' ? 0 : clamp(Math.round(Number(el.value)) || 0, 0, 999)) : el.value;
+  setPath(el.dataset.bind, v);
+  if (el.dataset.bind.indexOf('settings.') === 0) save();
+});
+
+/* =============================================================== ACTIONS */
+function startGame() {
+  const s = ui.setup;
+  if (liveGame()) { toast('Finish the game already running first.', 'bad'); return; }
+  const who = s.participants.filter(id => db.kids.some(k => k.id === id));
+  if (!who.length) { toast('Pick at least one player.', 'bad'); return; }
+  const n = v => Math.max(0, Math.round(Number(v)) || 0);
+  const g = {
+    id: uid(),
+    date: s.date || today(),
+    name: (s.name || '').trim() || (s.type === 'quiz' ? 'Quiz night' : 'Timed race'),
+    type: s.type,
+    payout: { first: n(s.payout.first), second: n(s.payout.second), third: n(s.payout.third), participation: n(s.payout.participation) },
+    quizTimer: s.type === 'quiz' ? (s.timer || 'off') : null,
+    countdownSec: s.type === 'race' || s.timer === 'game' ? Math.max(10, n(s.minutes || 10) * 60)
+      : s.type === 'quiz' && s.timer === 'question' ? clamp(n(s.qSecs || 15), 3, 300)
+      : null,
+    status: 'live', raceStart: null, raceAccum: 0, qNo: 1, passed: 0,
+    results: who.map(id => ({ kidId: id, correct: 0, finishSec: null, dnf: false, place: null, stars: 0 })),
+    createdAt: Date.now(), finishedAt: null
+  };
+  db.games.push(g);
+  save(); ui.undo = []; ui.setup = null; go('live');
+}
+
+function bumpScore(kidId, delta) {
+  const g = liveGame(); if (!g || g.type !== 'quiz') return;
+  if (delta > 0 && hasClock(g) && !perQuestion(g) && raceOver(g)) {
+    toast('Time is up — no more points.', 'bad'); return;
+  }
+  const r = (g.results || []).find(x => x.kidId === kidId); if (!r) return;
+  const before = r.correct || 0;
+  r.correct = Math.max(0, before + delta);
+  if (r.correct !== before) {
+    ui.undo.push({ kidId: kidId, delta: r.correct - before });
+    if (ui.undo.length > 40) ui.undo.shift();
+    // a correct answer ends the question: stop the clock, ready the next one
+    if (delta > 0 && perQuestion(g)) { g.raceStart = null; g.raceAccum = 0; g.qNo = (g.qNo || 1) + 1; }
+    delta > 0 ? blip() : unblip();
+    save(); render();
+  }
+}
+
+function openResults(g) {
+  ui.results = { gameId: g.id, rows: computeResults(g) };
+  go('results');
+}
+
+function saveResults() {
+  const g = db.games.find(x => x.id === (ui.results || {}).gameId);
+  if (!g) { go('board'); return; }
+  g.results = ui.results.rows.map(r => ({
+    kidId: r.kidId,
+    correct: Math.max(0, Number(r.correct) || 0),
+    finishSec: r.finishSec == null ? null : Number(r.finishSec),
+    dnf: !!r.dnf,
+    place: r.place || null,
+    stars: Math.max(0, Math.round(Number(r.stars)) || 0)
+  }));
+  g.status = 'done';
+  g.finishedAt = Date.now();
+  g.raceStart = null;
+  save();
+  ui.results = null;
+  ui.celebrate = g.id;
+  ui.screen = 'board';
+  ui.countUp = true;
+  render();
+  const champs = winnersOf(g);
+  confetti(champs.length ? champs.map(k => k.color).concat(['#fde047', '#ffffff']) : COLORS);
+  fanfare();
+}
+
+const actions = {
+  nav: (el, id) => {
+    ui.celebrate = null; ui.profile = null; ui.settingsOpen = false;
+    if (id === 'new') ui.setup = defaultSetup();
+    go(id);
+  },
+  resume: () => go('live'),
+  filter: (el, id) => { ui.filter = id; ui.countUp = true; render(); },
+
+  /* --- new game --- */
+  'setup-name': (el, id) => { ui.setup.name = id; render(); },
+  'setup-type': (el, id) => { ui.setup.type = id; render(); },
+  'setup-mins': (el, id) => { ui.setup.minutes = Number(id); render(); },
+  'setup-timer': (el, id) => { ui.setup.timer = id; render(); },
+  'setup-secs': (el, id) => { ui.setup.qSecs = Number(id); render(); },
+  'setup-who': (el, id) => {
+    const p = ui.setup.participants, i = p.indexOf(id);
+    i >= 0 ? p.splice(i, 1) : p.push(id);
+    render();
+  },
+  'start-game': startGame,
+
+  /* --- live quiz --- */
+  plus:  (el, id) => bumpScore(id, +1),
+  minus: (el, id) => bumpScore(id, -1),
+  undo: () => {
+    const last = ui.undo.pop(); if (!last) return;
+    const g = liveGame(); if (!g) return;
+    const r = (g.results || []).find(x => x.kidId === last.kidId);
+    if (r) r.correct = Math.max(0, (r.correct || 0) - last.delta);
+    unblip(); save(); render();
+  },
+  'finish-quiz': () => { const g = liveGame(); if (g) openResults(g); },
+
+  /* --- the clock (race countdown, and the quiz's optional timer) --- */
+  'race-start': () => {
+    const g = liveGame(); if (!g || !hasClock(g) || raceOver(g)) return;
+    g.raceStart = Date.now(); save(); dingDone(); render();
+  },
+  'next-q': () => {
+    const g = liveGame(); if (!perQuestion(g)) return;
+    g.raceAccum = 0; g.raceStart = Date.now(); g.qNo = (g.qNo || 1) + 1;
+    save(); dingDone(); render();
+  },
+  'race-pause': () => {
+    const g = liveGame(); if (!g || !g.raceStart) return;
+    g.raceAccum = (g.raceAccum || 0) + (Date.now() - g.raceStart);
+    g.raceStart = null; save(); render();
+  },
+  done: (el, id) => {
+    const g = liveGame(); if (!g) return;
+    if (!g.raceStart && !g.raceAccum) { toast('Start the timer first.', 'bad'); return; }
+    const r = (g.results || []).find(x => x.kidId === id); if (!r || r.finishSec != null) return;
+    r.finishSec = Math.max(0.1, Math.round(raceElapsed(g) * 10) / 10);
+    r.dnf = false;
+    save(); dingDone(); render();
+  },
+  unfinish: (el, id) => {
+    const g = liveGame(); if (!g) return;
+    const r = (g.results || []).find(x => x.kidId === id); if (!r) return;
+    r.finishSec = null; r.dnf = raceOver(g);
+    save(); render();
+  },
+  'finish-race': () => {
+    const g = liveGame(); if (!g) return;
+    const left = (g.results || []).filter(r => r.finishSec == null && !r.dnf);
+    if (left.length && !raceOver(g) &&
+        !confirm(left.map(r => kidOf(r.kidId).name).join(', ') + ' have not finished. They will get no placement stars. Finish the game now?')) return;
+    if (g.raceStart) { g.raceAccum = (g.raceAccum || 0) + (Date.now() - g.raceStart); g.raceStart = null; }
+    left.forEach(r => { r.dnf = true; });
+    save(); openResults(g);
+  },
+
+  /* --- abort: throw the running game away, nobody scores --- */
+  'abort-game': () => {
+    const g = liveGame();
+    if (!g) { ui.results = null; go('board'); return; }
+    if (!confirm('Abort "' + g.name + '"? It is not saved and nobody gets any stars.')) return;
+    db.games = db.games.filter(x => x.id !== g.id);
+    save();
+    ui.results = null;
+    ui.undo = [];
+    unblip();
+    go('board');                 // render() -> syncRaceTimer() stops the clock
+    toast('Game aborted. No stars awarded.');
+  },
+
+  /* --- results --- */
+  'results-save': saveResults,
+  'results-back': () => { ui.results = null; go('live'); },
+  'celebrate-close': () => { ui.celebrate = null; ui.countUp = true; go('board'); },
+
+  /* --- history --- */
+  'game-expand': (el, id) => {
+    if (ui.expand === id) { ui.expand = null; ui.edit = null; render(); return; }
+    const g = db.games.find(x => x.id === id); if (!g) return;
+    ui.expand = id;
+    ui.edit = { id: id, name: g.name, date: g.date, stars: {} };
+    (g.results || []).forEach(r => { ui.edit.stars[r.kidId] = r.stars || 0; });
+    render();
+  },
+  'game-collapse': () => { ui.expand = null; ui.edit = null; render(); },
+  'game-save': (el, id) => {
+    const g = db.games.find(x => x.id === id); if (!g || !ui.edit) return;
+    g.name = (ui.edit.name || '').trim() || g.name;
+    g.date = ui.edit.date || g.date;
+    (g.results || []).forEach(r => { r.stars = Math.max(0, Math.round(Number(ui.edit.stars[r.kidId])) || 0); });
+    save(); ui.expand = null; ui.edit = null; render(); toast('Game updated.');
+  },
+  'game-delete': (el, id) => {
+    const g = db.games.find(x => x.id === id); if (!g) return;
+    if (!confirm('Delete "' + g.name + '" from ' + fmtDay(g.date) + '? The stars from it will be taken off the board.')) return;
+    db.games = db.games.filter(x => x.id !== id);
+    save(); ui.expand = null; ui.edit = null; render(); toast('Game deleted.');
+  }
+};
+
+/* --- kids, modals, settings --- */
+Object.assign(actions, {
+  'kid-new': () => {
+    ui.kidEdit = { id: null, name: '', emoji: EMOJIS[db.kids.length % EMOJIS.length], color: COLORS[db.kids.length % COLORS.length], photo: null };
+    go('kids');
+  },
+  'kid-edit': (el, id) => {
+    const k = db.kids.find(x => x.id === id); if (!k) return;
+    ui.kidEdit = { id: k.id, name: k.name, emoji: k.emoji, color: k.color, photo: k.photo || null };
+    go('kids');
+  },
+  'kid-cancel': () => { ui.kidEdit = null; render(); },
+  'kid-emoji': (el, id) => { ui.kidEdit.emoji = id; render(); },
+  'kid-color': (el, id) => { ui.kidEdit.color = decodeURIComponent(id); render(); },
+  'kid-photo': () => pickPhoto(dataUrl => { ui.kidEdit.photo = dataUrl; render(); toast('Photo added.'); }),
+  'kid-photo-clear': () => { ui.kidEdit.photo = null; render(); },
+  'kid-save': () => {
+    const e = ui.kidEdit, name = (e.name || '').trim();
+    if (!name) { toast('Give this player a name first.', 'bad'); return; }
+    if (e.id) {
+      const k = db.kids.find(x => x.id === e.id);
+      Object.assign(k, { name: name, emoji: e.emoji, color: e.color, photo: e.photo });
+    } else {
+      db.kids.push({ id: uid(), name: name, emoji: e.emoji, color: e.color, photo: e.photo, active: true, createdAt: Date.now() });
+    }
+    if (save()) { ui.kidEdit = null; render(); toast(name + ' is ready to play.'); }
+  },
+  'kid-archive': (el, id) => {
+    const k = db.kids.find(x => x.id === id); if (!k) return;
+    k.active = false; save(); render();
+    toast(k.name + ' is out of the line-up. Their history is kept.');
+  },
+  'kid-restore': (el, id) => {
+    const k = db.kids.find(x => x.id === id); if (!k) return;
+    k.active = true; save(); render(); toast(k.name + ' is back in.');
+  },
+
+  profile: (el, id) => { ui.profile = id; render(); },
+  'modal-close': () => { ui.profile = null; render(); },
+  'settings-open': () => { ui.settingsOpen = true; render(); },
+  'settings-save': () => { save(); ui.settingsOpen = false; render(); },
+  'sound-toggle': () => { db.settings.soundOn = !db.settings.soundOn; save(); render(); if (db.settings.soundOn) dingDone(); },
+  wipe: () => {
+    if (!confirm('Erase every player, game and star? This cannot be undone.')) return;
+    if (!confirm('Really erase everything? Last chance.')) return;
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    db = blankDB();
+    Object.assign(ui, { screen: 'board', filter: 'all', filterDate: today(), setup: null, results: null,
+                        celebrate: null, kidEdit: null, profile: null, settingsOpen: false, expand: null, edit: null, undo: [] });
+    render(); toast('Board cleared.');
+  }
+});
+
+/* =============================================================== EVENTS */
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  if (el.dataset.backdrop && e.target !== el) return;   // ignore clicks inside a modal
+  const fn = actions[el.dataset.act];
+  if (fn) { e.preventDefault(); fn(el, el.dataset.id, e); }
+});
+
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-act="filter-date"]');
+  if (!el) return;
+  ui.filterDate = el.value || today();
+  ui.filter = 'date';
+  ui.countUp = true;
+  render();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (ui.celebrate) return actions['celebrate-close']();
+    if (ui.profile) return actions['modal-close']();
+    if (ui.settingsOpen) return actions['settings-save']();
+  }
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''))) return;
+
+  // Enter / Space activate a focused card
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset && e.target.dataset.act) {
+    e.preventDefault(); actions[e.target.dataset.act](e.target, e.target.dataset.id, e); return;
+  }
+  // Live quiz keyboard shortcuts: 1..9 score a player, Z undoes
+  const g = liveGame();
+  if (ui.screen === 'live' && g && g.type === 'quiz') {
+    if (/^[1-9]$/.test(e.key)) {
+      const r = (g.results || [])[Number(e.key) - 1];
+      if (r) { e.preventDefault(); bumpScore(r.kidId, +1); }
+    } else if (e.key === 'z' || e.key === 'Z') { e.preventDefault(); actions.undo(); }
+    else if (e.key === ' ' && hasClock(g)) {
+      e.preventDefault();
+      actions[perQuestion(g) && raceOver(g) ? 'next-q' : g.raceStart ? 'race-pause' : 'race-start']();
+    }
+  }
+});
+
+window.addEventListener('beforeunload', () => { if (liveGame()) save(); });
+
+/* ================================================================== INIT */
+render();
+if (!db.kids.length) actions['kid-new']();   // first run: land straight in the add-player form
+</script>
+</body>
+</html>

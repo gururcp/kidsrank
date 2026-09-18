@@ -394,7 +394,7 @@ const ui = {
   kidEdit: null,
   profile: null,
   settingsOpen: false,
-  link: { mail: '', open: false, sent: '' },
+  link: { mail: '', paste: '', open: false, sent: '' },
   expand: null,
   edit: null,
   undo: [],
@@ -489,13 +489,38 @@ function btn(act, label, opts) {
    A Google Workspace alias is the case that needs it: mail sent to it arrives
    perfectly well, but it can never sign in, because it is not an account. An
    email link asks nothing of an address except that it receives mail. */
+
+/* An outstanding link, remembered in storage rather than only in memory. On an
+   iPhone the app is put to sleep the moment she switches to Mail to fetch the
+   link, and may well be reloaded on the way back; asking storage means the
+   paste box is still waiting when she returns. */
+function linkPending() {
+  if (ui.link.sent) return ui.link.sent;
+  try { return localStorage.getItem(LINK_KEY) || ''; } catch (e) { return ''; }
+}
 function emailLinkForm() {
-  if (ui.link.sent) {
+  const pending = linkPending();
+  if (pending) {
     return '<div class="mt-3 w-full rounded-2xl bg-white/10 p-3 text-sm">' +
-      '<div class="font-extrabold text-emerald-200">\u2709 Link sent to ' + esc(ui.link.sent) + '</div>' +
+      '<div class="font-extrabold text-emerald-200">\u2709 Link sent to ' + esc(pending) + '</div>' +
       '<p class="mt-1 text-white/60">Open that email <b>on this device</b> and tap the link. It signs this device in, ' +
       'and then stays signed in. The link is good for one use.</p>' +
-      btn('link-reset', 'Use a different address', { cls: 'mt-2 w-full py-2 text-sm' }) + '</div>';
+      /* The iPhone case, and it is not a rare one: an app added to the home
+         screen is a separate browser as far as signing in goes, and a link
+         tapped in Mail always opens in Safari instead — so the sign-in lands
+         next door and the home-screen app is never signed in at all. Pasting
+         the link takes it to the right place. Firebase reads the code out of
+         whatever link it is handed, so this is the same sign-in by another road. */
+      '<div class="mt-3 rounded-2xl bg-black/25 p-3">' +
+        '<div class="font-extrabold text-white/80">Does the link open somewhere else?</div>' +
+        '<p class="mt-1 text-xs text-white/55">If this board was added to the home screen, a link tapped in Mail opens in ' +
+          'Safari, which counts as a different browser and signs <i>that</i> in instead. So don\'t tap it: in Mail, ' +
+          '<b>press and hold</b> the link, choose <b>Copy Link</b>, come back here and paste it.</p>' +
+        '<input data-bind="link.paste" type="url" inputmode="url" autocomplete="off" spellcheck="false" ' +
+          'placeholder="Paste the sign-in link" value="' + esc(ui.link.paste) + '" class="mt-2 ' + INPUT_CLS + '">' +
+        btn('link-paste-go', 'Sign in with this link', { tone: 'primary', cls: 'mt-2 w-full py-2 text-sm' }) +
+      '</div>' +
+      btn('link-reset', 'Start again with a different address', { cls: 'mt-2 w-full py-2 text-sm' }) + '</div>';
   }
   if (!ui.link.open) {
     return btn('link-open', '\u2709 Email me a link instead', { cls: 'mt-2 w-full py-2 text-sm' });
@@ -1543,8 +1568,14 @@ Object.assign(actions, {
   },
   'join-hide': () => { ui.joinHide = true; render(); },
   'link-open':  () => { ui.link.open = true; render(); },
-  'link-reset': () => { ui.link = { mail: '', open: true, sent: '' }; render(); },
+  'link-reset': () => {
+    // the outstanding link is abandoned, so it stops being remembered too
+    try { localStorage.removeItem(LINK_KEY); } catch (e) {}
+    ui.link = { mail: '', paste: '', open: true, sent: '' };
+    render();
+  },
   'link-send':  () => { if (sync) sync.emailLinkSend(ui.link.mail); },
+  'link-paste-go': () => { if (sync) sync.emailLinkPaste(ui.link.paste); },
   'settings-save': () => { save(); ui.settingsOpen = false; render(); },
   'sound-toggle': () => { db.settings.soundOn = !db.settings.soundOn; save(); render(); if (db.settings.soundOn) dingDone(); },
   wipe: () => {
@@ -1564,7 +1595,7 @@ Object.assign(actions, {
     db = blankDB();
     Object.assign(ui, { screen: 'board', filter: 'all', filterDate: today(), setup: null, results: null,
                         celebrate: null, kidEdit: null, profile: null, settingsOpen: false, expand: null, edit: null, undo: [],
-                        link: { mail: '', open: false, sent: '' } });
+                        link: { mail: '', paste: '', open: false, sent: '' } });
     render(); toast('Board cleared.');
   }
 });
@@ -1809,26 +1840,49 @@ sync = {
       console.warn('KidsRank: could not send a sign-in link', e);
     }
   },
+  /* This page was opened from a link. */
   async emailLinkReturn() {
     let isLink = false;
     try { isLink = this.U.isSignInWithEmailLink(this.auth, location.href); } catch (e) {}
     if (!isLink) return;
+    await this.emailLinkFinish(location.href);
+    // the code is spent either way, and leaving it in the address bar means a
+    // refresh retries a dead code and looks like a broken sign-in
+    this.cleanLinkUrl();
+  },
+  /* A link pasted in by hand, which is the only way into an app added to an
+     iPhone's home screen: that app has its own storage and its own sign-in, and
+     a link tapped in Mail opens in Safari and signs Safari in instead. Nothing
+     about the sign-in changes — the code inside the link is the same code. */
+  async emailLinkPaste(url) {
+    if (!this.ready) { toast('The shared board is not switched on in this copy yet.', 'bad'); return; }
+    url = String(url || '').trim();
+    if (!url) { toast('Paste the sign-in link from the email first.', 'bad'); return; }
+    let isLink = false;
+    try { isLink = this.U.isSignInWithEmailLink(this.auth, url); } catch (e) {}
+    if (!isLink) {
+      toast('That is not a sign-in link. Copy the whole link out of the email.', 'bad');
+      return;
+    }
+    if (await this.emailLinkFinish(url)) return;   // signed in; the board redraws itself
+    ui.link.paste = '';
+    render();
+  },
+  /* Shared by both roads in. Returns true if it signed in. */
+  async emailLinkFinish(href) {
     let email = '';
     try { email = localStorage.getItem(LINK_KEY) || ''; } catch (e) {}
     /* Opened somewhere other than the browser that asked — a phone tapping a
-       link out of a laptop's inbox. The address has to be typed again; that is
+       link out of a laptop's inbox. The address has to be given again; that is
        Firebase refusing to let a forwarded link sign anybody in by itself. */
     if (!email) email = String(prompt('Which email address was this link sent to?') || '').trim();
-    if (!email) {
-      this.cleanLinkUrl();
-      toast('Signing in needs the address the link was sent to.', 'bad');
-      return;
-    }
+    if (!email) { toast('Signing in needs the address the link was sent to.', 'bad'); return false; }
     try {
-      await this.U.signInWithEmailLink(this.auth, email, location.href);
+      await this.U.signInWithEmailLink(this.auth, email, href);
       try { localStorage.removeItem(LINK_KEY); } catch (e) {}
-      ui.link = { mail: '', open: false, sent: '' };
+      ui.link = { mail: '', paste: '', open: false, sent: '' };
       toast('Signed in as ' + email);
+      return true;
     } catch (e) {
       const c = e.code || '';
       toast(c === 'auth/invalid-email'
@@ -1837,11 +1891,9 @@ sync = {
               ? 'That link has been used already, or has expired. Ask for a fresh one.'
           : 'Could not finish signing in. ' + c, 'bad');
       console.warn('KidsRank: email link sign-in failed', e);
+      return false;
     }
-    this.cleanLinkUrl();
   },
-  /* The one-time code is spent either way, and leaving it in the address bar
-     means a refresh retries a dead code and looks like a broken sign-in. */
   cleanLinkUrl() {
     try { history.replaceState(null, '', location.pathname); } catch (e) {}
   },

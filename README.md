@@ -173,6 +173,27 @@ Two things worth knowing:
   the browser that asked for it, the app asks for the address again — that is
   Firebase refusing to let a forwarded link sign a stranger in, not a fault.
 
+#### On an iPhone, if you added it to the home screen
+
+An app added to the iPhone home screen is **its own browser**. It does not share
+sign-ins or storage with Safari, and a link tapped in Mail always opens in Safari
+— so the sign-in lands next door and the home-screen app is never signed in.
+Signing in over and over, and each link opening "in a new browser", is that
+happening. Nothing is broken.
+
+There are two ways round it, and the first is one tap:
+
+- **Paste the link instead of tapping it.** Open the home-screen app, ask for a
+  link, and it shows a **Paste the sign-in link** box. In Mail, *press and hold*
+  the link and choose **Copy Link** — do not tap it — then come back and paste it
+  there. That signs the home-screen app in, and it stays signed in.
+- **Or just use Safari.** The board works exactly the same in a normal Safari
+  tab, and signing in there is a plain tap on the link. Keep it as a Safari
+  bookmark or in a pinned tab rather than a home-screen app.
+
+Ask for a **fresh** link for the paste. Links are good for one use, so one that
+was already tapped in Safari is spent and will be refused.
+
 This has to be switched on in Firebase once: **Authentication → Sign-in method →
 Email/Password → enable, and tick "Email link (passwordless sign-in)"**. Without
 it the app reports that email links are not switched on for this board.
